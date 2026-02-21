@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { fetchSurahText, type QuranWord } from '@/lib/quranApi';
-import { wordsMatch } from '@/lib/arabicUtils';
+import { matchConsecutiveWords } from '@/lib/arabicUtils';
 import { SurahSelector } from '@/components/SurahSelector';
 import { QuranDisplay } from '@/components/QuranDisplay';
 import { RecitationControls } from '@/components/RecitationControls';
@@ -59,48 +59,21 @@ const Index = () => {
     const w = wordsRef.current;
     if (idx >= w.length) return;
 
-    const expectedWord = w[idx];
-    
-    // Check each word in the transcription against expected
-    const spokenWords = transcribedText.split(/\s+/);
-    let matched = false;
-
-    // Try matching the expected word against the full text or individual words
-    if (wordsMatch(transcribedText, expectedWord.text)) {
-      matched = true;
-    }
-
-    // Also try matching multiple consecutive words
-    if (!matched) {
-      for (const spoken of spokenWords) {
-        if (wordsMatch(spoken, expectedWord.text)) {
-          matched = true;
-          break;
-        }
-      }
-    }
+    // Try to match consecutive words from current position
+    const matchCount = matchConsecutiveWords(transcribedText, w, idx);
 
     setWordStatuses(prev => {
       const next = new Map(prev);
-      const current = next.get(idx) || { state: 'current' as const, retries: 0 };
 
-      if (matched) {
-        next.set(idx, { state: 'correct', retries: current.retries });
-        
-        // Check if transcription contains multiple expected words in sequence
-        let advanceCount = 1;
-        if (spokenWords.length > 1) {
-          for (let i = 1; i < spokenWords.length && idx + advanceCount < w.length; i++) {
-            if (wordsMatch(spokenWords[i], w[idx + advanceCount].text)) {
-              next.set(idx + advanceCount, { state: 'correct', retries: 0 });
-              advanceCount++;
-            } else {
-              break;
-            }
-          }
+      if (matchCount > 0) {
+        // Mark all matched words as correct
+        for (let i = 0; i < matchCount; i++) {
+          const wordIdx = idx + i;
+          const current = next.get(wordIdx) || { state: 'current' as const, retries: 0 };
+          next.set(wordIdx, { state: 'correct', retries: current.retries });
         }
 
-        const nextIdx = idx + advanceCount;
+        const nextIdx = idx + matchCount;
         if (nextIdx < w.length) {
           next.set(nextIdx, { state: 'current', retries: 0 });
           setCurrentIndex(nextIdx);
@@ -111,6 +84,7 @@ const Index = () => {
           toast({ title: '🎉 ماشاء الله!', description: 'You have completed this Surah!' });
         }
       } else {
+        const current = next.get(idx) || { state: 'current' as const, retries: 0 };
         next.set(idx, { state: 'incorrect', retries: current.retries + 1 });
         setTimeout(() => {
           setWordStatuses(p => {
@@ -131,10 +105,10 @@ const Index = () => {
   const handleStart = useCallback(() => {
     if (words.length === 0) return;
     if (!isSupported) {
-      toast({ 
-        title: 'Not Supported', 
-        description: 'Your browser doesn\'t support speech recognition. Please use Chrome or Edge.', 
-        variant: 'destructive' 
+      toast({
+        title: 'Not Supported',
+        description: 'Your browser doesn\'t support speech recognition. Please use Chrome or Edge.',
+        variant: 'destructive'
       });
       return;
     }
@@ -161,7 +135,6 @@ const Index = () => {
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
-      {/* Header */}
       <header className="border-b border-border px-6 py-4">
         <div className="max-w-6xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-4">
           <div className="flex items-center gap-3">
@@ -176,7 +149,6 @@ const Index = () => {
         </div>
       </header>
 
-      {/* Main Content */}
       <main className="flex-1 flex flex-col items-center justify-center px-6 py-10 gap-10">
         {loading ? (
           <div className="flex items-center justify-center py-20">
@@ -202,7 +174,6 @@ const Index = () => {
           hasWords={words.length > 0}
         />
 
-        {/* Last heard feedback */}
         {lastHeard && (
           <div className="text-center space-y-1">
             <p className="text-xs text-muted-foreground">Last heard:</p>
