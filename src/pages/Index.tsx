@@ -4,8 +4,7 @@ import { wordsMatch } from '@/lib/arabicUtils';
 import { SurahSelector } from '@/components/SurahSelector';
 import { QuranDisplay } from '@/components/QuranDisplay';
 import { RecitationControls } from '@/components/RecitationControls';
-import { useAudioRecorder } from '@/hooks/useAudioRecorder';
-import { useWebSocket } from '@/hooks/useWebSocket';
+import { useSpeechRecognition } from '@/hooks/useSpeechRecognition';
 import { useToast } from '@/hooks/use-toast';
 
 interface WordStatus {
@@ -13,21 +12,17 @@ interface WordStatus {
   retries: number;
 }
 
-const WS_URL = 'ws://localhost:8000/ws/transcribe';
-
 const Index = () => {
   const [selectedSurah, setSelectedSurah] = useState(1);
   const [words, setWords] = useState<QuranWord[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [wordStatuses, setWordStatuses] = useState<Map<number, WordStatus>>(new Map());
   const [loading, setLoading] = useState(false);
-  const [isActive, setIsActive] = useState(false);
+  const [lastHeard, setLastHeard] = useState('');
   const currentIndexRef = useRef(0);
   const wordsRef = useRef<QuranWord[]>([]);
-  const wordStatusesRef = useRef<Map<number, WordStatus>>(new Map());
 
-  const { isRecording, startRecording, stopRecording } = useAudioRecorder(1000);
-  const { connect, disconnect, sendAudio } = useWebSocket();
+  const { isListening, start, stop, isSupported } = useSpeechRecognition();
   const { toast } = useToast();
 
   const completedWords = Array.from(wordStatuses.values()).filter(s => s.state === 'correct').length;
@@ -47,7 +42,6 @@ const Index = () => {
         statuses.set(i, { state: i === 0 ? 'current' : 'pending', retries: 0 });
       });
       setWordStatuses(statuses);
-      wordStatusesRef.current = statuses;
     } catch {
       toast({ title: 'Error', description: 'Failed to load Surah text', variant: 'destructive' });
     } finally {
@@ -55,37 +49,69 @@ const Index = () => {
     }
   }, [toast]);
 
-  // Load default surah on mount
   useEffect(() => {
     handleSurahSelect(1);
   }, []);
 
   const handleTranscription = useCallback((transcribedText: string) => {
+    setLastHeard(transcribedText);
     const idx = currentIndexRef.current;
     const w = wordsRef.current;
     if (idx >= w.length) return;
 
     const expectedWord = w[idx];
-    const isCorrect = wordsMatch(transcribedText, expectedWord.text);
+    
+    // Check each word in the transcription against expected
+    const spokenWords = transcribedText.split(/\s+/);
+    let matched = false;
+
+    // Try matching the expected word against the full text or individual words
+    if (wordsMatch(transcribedText, expectedWord.text)) {
+      matched = true;
+    }
+
+    // Also try matching multiple consecutive words
+    if (!matched) {
+      for (const spoken of spokenWords) {
+        if (wordsMatch(spoken, expectedWord.text)) {
+          matched = true;
+          break;
+        }
+      }
+    }
 
     setWordStatuses(prev => {
       const next = new Map(prev);
       const current = next.get(idx) || { state: 'current' as const, retries: 0 };
 
-      if (isCorrect) {
+      if (matched) {
         next.set(idx, { state: 'correct', retries: current.retries });
-        const nextIdx = idx + 1;
+        
+        // Check if transcription contains multiple expected words in sequence
+        let advanceCount = 1;
+        if (spokenWords.length > 1) {
+          for (let i = 1; i < spokenWords.length && idx + advanceCount < w.length; i++) {
+            if (wordsMatch(spokenWords[i], w[idx + advanceCount].text)) {
+              next.set(idx + advanceCount, { state: 'correct', retries: 0 });
+              advanceCount++;
+            } else {
+              break;
+            }
+          }
+        }
+
+        const nextIdx = idx + advanceCount;
         if (nextIdx < w.length) {
           next.set(nextIdx, { state: 'current', retries: 0 });
           setCurrentIndex(nextIdx);
           currentIndexRef.current = nextIdx;
         } else {
-          // Surah complete
-          toast({ title: '🎉 Masha\'Allah!', description: 'You have completed this Surah!' });
+          setCurrentIndex(nextIdx);
+          currentIndexRef.current = nextIdx;
+          toast({ title: '🎉 ماشاء الله!', description: 'You have completed this Surah!' });
         }
       } else {
         next.set(idx, { state: 'incorrect', retries: current.retries + 1 });
-        // Reset to current after brief delay
         setTimeout(() => {
           setWordStatuses(p => {
             const n = new Map(p);
@@ -98,31 +124,30 @@ const Index = () => {
         }, 800);
       }
 
-      wordStatusesRef.current = next;
       return next;
     });
   }, [toast]);
 
-  const handleStart = useCallback(async () => {
+  const handleStart = useCallback(() => {
     if (words.length === 0) return;
-    setIsActive(true);
-
-    // Try connecting to WebSocket backend
-    connect(WS_URL, handleTranscription);
-
-    await startRecording((blob) => {
-      sendAudio(blob);
-    });
-  }, [words, connect, handleTranscription, startRecording, sendAudio]);
+    if (!isSupported) {
+      toast({ 
+        title: 'Not Supported', 
+        description: 'Your browser doesn\'t support speech recognition. Please use Chrome or Edge.', 
+        variant: 'destructive' 
+      });
+      return;
+    }
+    start(handleTranscription);
+  }, [words, isSupported, start, handleTranscription, toast]);
 
   const handleStop = useCallback(() => {
-    stopRecording();
-    disconnect();
-    setIsActive(false);
-  }, [stopRecording, disconnect]);
+    stop();
+  }, [stop]);
 
   const handleReset = useCallback(() => {
-    handleStop();
+    stop();
+    setLastHeard('');
     if (words.length > 0) {
       setCurrentIndex(0);
       currentIndexRef.current = 0;
@@ -131,9 +156,8 @@ const Index = () => {
         statuses.set(i, { state: i === 0 ? 'current' : 'pending', retries: 0 });
       });
       setWordStatuses(statuses);
-      wordStatusesRef.current = statuses;
     }
-  }, [handleStop, words]);
+  }, [stop, words]);
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
@@ -147,7 +171,7 @@ const Index = () => {
           <SurahSelector
             selectedSurah={selectedSurah}
             onSelect={handleSurahSelect}
-            disabled={isActive}
+            disabled={isListening}
           />
         </div>
       </header>
@@ -167,8 +191,8 @@ const Index = () => {
         )}
 
         <RecitationControls
-          isRecording={isRecording}
-          isConnected={isActive}
+          isRecording={isListening}
+          isConnected={isListening}
           onStart={handleStart}
           onStop={handleStop}
           onReset={handleReset}
@@ -178,11 +202,19 @@ const Index = () => {
           hasWords={words.length > 0}
         />
 
-        {/* Connection note */}
-        <p className="text-xs text-muted-foreground text-center max-w-md">
-          Connects to FastAPI backend at <code className="text-gold-dim">{WS_URL}</code> for speech recognition. 
-          Ensure your backend with faster-whisper is running.
-        </p>
+        {/* Last heard feedback */}
+        {lastHeard && (
+          <div className="text-center space-y-1">
+            <p className="text-xs text-muted-foreground">Last heard:</p>
+            <p className="font-quran text-lg text-gold-dim">{lastHeard}</p>
+          </div>
+        )}
+
+        {!isSupported && (
+          <p className="text-xs text-incorrect text-center max-w-md">
+            ⚠️ Speech recognition is not supported in your browser. Please use Chrome or Edge.
+          </p>
+        )}
       </main>
     </div>
   );
