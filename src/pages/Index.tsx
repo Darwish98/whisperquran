@@ -1,17 +1,17 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
-import { fetchSurahText, fetchSurahList, getAyahAudioUrl, type QuranWord, type SurahInfo } from '@/lib/quranApi';
+import { fetchSurahText, getAyahAudioUrl, type QuranWord } from '@/lib/quranApi';
 import { matchConsecutiveWords } from '@/lib/arabicUtils';
 import { playAudio, preloadWordAudio } from '@/lib/audioPlayer';
 import { SurahSelector } from '@/components/SurahSelector';
 import { QuranDisplay } from '@/components/QuranDisplay';
 import { RecitationControls } from '@/components/RecitationControls';
-import { useSpeechRecognition } from '@/hooks/useSpeechRecognition';
+import { useAzureSpeech } from '@/hooks/useAzureSpeech';
 import { useAuth } from '@/hooks/useAuth';
 import { useUserProgress } from '@/hooks/useUserProgress';
 import { useToast } from '@/hooks/use-toast';
 import { useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
-import { LogIn, LogOut } from 'lucide-react';
+import { LogIn, LogOut, Sun, Moon, Eye, EyeOff } from 'lucide-react';
 
 interface WordStatus {
   state: 'pending' | 'current' | 'correct' | 'incorrect';
@@ -24,17 +24,21 @@ const Index = () => {
   const [selectedSurah, setSelectedSurah] = useState(1);
   const selectedSurahRef = useRef(1);
   const [words, setWords] = useState<QuranWord[]>([]);
-  const [surahList, setSurahList] = useState<SurahInfo[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [wordStatuses, setWordStatuses] = useState<Map<number, WordStatus>>(new Map());
   const [loading, setLoading] = useState(false);
   const [lastHeard, setLastHeard] = useState('');
+  const [isDark, setIsDark] = useState(true);
+  const [showPending, setShowPending] = useState(true);
+
   const currentIndexRef = useRef(0);
   const wordsRef = useRef<QuranWord[]>([]);
   const sessionStartRef = useRef<number>(0);
   const wordsAttemptedRef = useRef(0);
 
-  const { isListening, start, stop, isSupported } = useSpeechRecognition();
+  // ── Azure speech (falls back to browser if VITE_WS_URL not set) ──────────
+  const { isListening, isConnected, start, stop, mode, error: speechError } = useAzureSpeech();
+
   const { user, signOut } = useAuth();
   const { saveProgress, saveRecitationHistory } = useUserProgress();
   const { toast } = useToast();
@@ -43,15 +47,17 @@ const Index = () => {
   const completedWords = Array.from(wordStatuses.values()).filter(s => s.state === 'correct').length;
   const progress = words.length > 0 ? (completedWords / words.length) * 100 : 0;
 
-  // Current surah info
-  const currentSurahInfo = surahList.find(s => s.number === selectedSurah);
-
-  // Load surah list once
+  // ── Apply dark/light class to <html> ─────────────────────────────────────
   useEffect(() => {
-    fetchSurahList().then(setSurahList).catch(console.error);
-  }, []);
+    const root = document.documentElement;
+    if (isDark) {
+      root.classList.remove('light');
+    } else {
+      root.classList.add('light');
+    }
+  }, [isDark]);
 
-  // Preload audio for upcoming words
+  // ── Preload audio ─────────────────────────────────────────────────────────
   useEffect(() => {
     if (words.length > 0 && currentIndex < words.length) {
       const upcoming = words.slice(currentIndex, currentIndex + 10);
@@ -60,6 +66,7 @@ const Index = () => {
     }
   }, [currentIndex, words, selectedSurah]);
 
+  // ── Load surah ────────────────────────────────────────────────────────────
   const handleSurahSelect = useCallback(async (surahNumber: number) => {
     setSelectedSurah(surahNumber);
     selectedSurahRef.current = surahNumber;
@@ -84,11 +91,9 @@ const Index = () => {
     }
   }, [toast, stop]);
 
-  useEffect(() => {
-    handleSurahSelect(1);
-  }, []);
+  useEffect(() => { handleSurahSelect(1); }, []);
 
-  // Auto-save progress
+  // ── Auto-save progress ────────────────────────────────────────────────────
   useEffect(() => {
     if (!user || words.length === 0) return;
     const interval = setInterval(() => {
@@ -97,6 +102,7 @@ const Index = () => {
     return () => clearInterval(interval);
   }, [user, selectedSurah, words.length, completedWords, progress, saveProgress]);
 
+  // ── Handle transcription from Azure or browser ────────────────────────────
   const handleTranscription = useCallback((transcribedText: string) => {
     setLastHeard(transcribedText);
     const idx = currentIndexRef.current;
@@ -140,16 +146,14 @@ const Index = () => {
           const word = w[idx];
           const audioUrl = getAyahAudioUrl(selectedSurahRef.current, word.ayahNumber);
           playAudio(audioUrl);
-          toast({ title: '🔊 استمع وكرر', description: 'Listen and repeat after the reciter.' });
+          toast({ title: '🔊 Listen & Repeat', description: 'Playing the ayah audio to help you.' });
         }
 
         setTimeout(() => {
           setWordStatuses(p => {
             const n = new Map(p);
             const s = n.get(idx);
-            if (s && s.state === 'incorrect') {
-              n.set(idx, { ...s, state: 'current' });
-            }
+            if (s && s.state === 'incorrect') n.set(idx, { ...s, state: 'current' });
             return n;
           });
         }, 800);
@@ -161,18 +165,10 @@ const Index = () => {
 
   const handleStart = useCallback(() => {
     if (words.length === 0) return;
-    if (!isSupported) {
-      toast({
-        title: 'Not Supported',
-        description: 'Please use Chrome or Edge for speech recognition.',
-        variant: 'destructive',
-      });
-      return;
-    }
     sessionStartRef.current = Date.now();
     wordsAttemptedRef.current = 0;
     start(handleTranscription);
-  }, [words, isSupported, start, handleTranscription, toast]);
+  }, [words, start, handleTranscription]);
 
   const handleStop = useCallback(() => {
     stop();
@@ -198,144 +194,118 @@ const Index = () => {
   }, [stop, words]);
 
   return (
-    <div className="min-h-screen bg-background flex flex-col relative overflow-hidden">
-      {/* Background geometric pattern */}
-      <div className="absolute inset-0 pointer-events-none select-none overflow-hidden" aria-hidden>
-        {/* Corner ornaments */}
-        <div className="absolute top-0 left-0 w-64 h-64 opacity-[0.03]">
-          <svg viewBox="0 0 200 200" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <path d="M0 0L200 0L200 200" stroke="hsl(45 70% 55%)" strokeWidth="1"/>
-            <path d="M0 0L150 0L150 150" stroke="hsl(45 70% 55%)" strokeWidth="0.5"/>
-            <path d="M0 0L100 100" stroke="hsl(45 70% 55%)" strokeWidth="0.5"/>
-            <circle cx="0" cy="0" r="100" stroke="hsl(45 70% 55%)" strokeWidth="0.5" fill="none"/>
-            <circle cx="0" cy="0" r="60" stroke="hsl(45 70% 55%)" strokeWidth="0.5" fill="none"/>
-          </svg>
-        </div>
-        <div className="absolute top-0 right-0 w-64 h-64 opacity-[0.03] scale-x-[-1]">
-          <svg viewBox="0 0 200 200" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <path d="M0 0L200 0L200 200" stroke="hsl(45 70% 55%)" strokeWidth="1"/>
-            <path d="M0 0L150 0L150 150" stroke="hsl(45 70% 55%)" strokeWidth="0.5"/>
-            <path d="M0 0L100 100" stroke="hsl(45 70% 55%)" strokeWidth="0.5"/>
-            <circle cx="0" cy="0" r="100" stroke="hsl(45 70% 55%)" strokeWidth="0.5" fill="none"/>
-          </svg>
-        </div>
-        {/* Subtle radial glow behind text area */}
-        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[600px] h-[400px] rounded-full bg-gold/[0.02] blur-3xl" />
-      </div>
-
+    <div className="min-h-screen bg-background flex flex-col transition-colors duration-300">
       {/* ── Header ── */}
-      <header className="relative z-10 border-b border-border/40 backdrop-blur-sm bg-background/60">
-        <div className="max-w-4xl mx-auto flex items-center justify-between px-6 py-3 gap-4">
+      <header className="border-b border-border px-6 py-4">
+        <div className="max-w-6xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-4">
           {/* Logo */}
-          <div className="flex items-center gap-3 shrink-0">
-            <div className="relative">
-              <div className="w-8 h-8 rotate-45 border border-gold/60 rounded-sm flex items-center justify-center">
-                <div className="w-4 h-4 rotate-0 bg-gold/10 rounded-sm" />
-              </div>
-            </div>
-            <div>
-              <div className="font-quran text-xl text-gold leading-none">تلاوة</div>
-              <div className="text-[10px] text-muted-foreground/50 font-sans tracking-widest uppercase leading-none mt-0.5">
-                Tilawa
-              </div>
-            </div>
+          <div className="flex items-center gap-3">
+            <h1 className="font-quran text-2xl text-gold glow-gold">تلاوة</h1>
+            <span className="text-sm text-muted-foreground">Quran Recitation Trainer</span>
           </div>
 
-          {/* Surah selector */}
-          <div className="flex-1 max-w-xs">
+          {/* Controls row */}
+          <div className="flex items-center gap-3 flex-wrap justify-center">
             <SurahSelector
               selectedSurah={selectedSurah}
               onSelect={handleSurahSelect}
               disabled={isListening}
             />
-          </div>
 
-          {/* Auth */}
-          <div className="shrink-0">
+            {/* Eye toggle: show/hide pending ayahs */}
+            <Button
+              variant="outline"
+              size="icon"
+              onClick={() => setShowPending(p => !p)}
+              title={showPending ? 'Hide upcoming ayahs' : 'Show upcoming ayahs'}
+              className="border-border/60"
+            >
+              {showPending ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
+            </Button>
+
+            {/* Dark / Light mode toggle */}
+            <Button
+              variant="outline"
+              size="icon"
+              onClick={() => setIsDark(d => !d)}
+              title={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
+              className="border-border/60"
+            >
+              {isDark ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+            </Button>
+
+            {/* Auth */}
             {user ? (
               <div className="flex items-center gap-2">
-                <span className="text-xs text-muted-foreground/60 hidden sm:block font-sans">
-                  {user.user_metadata?.full_name || user.email?.split('@')[0]}
+                <span className="text-sm text-muted-foreground hidden sm:inline">
+                  {user.user_metadata?.full_name || user.email}
                 </span>
-                <Button variant="ghost" size="icon" onClick={signOut} className="w-8 h-8">
-                  <LogOut className="w-3.5 h-3.5" />
+                <Button variant="ghost" size="icon" onClick={signOut}>
+                  <LogOut className="w-4 h-4" />
                 </Button>
               </div>
             ) : (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => navigate('/auth')}
-                className="text-xs border-border/50 h-8"
-              >
-                <LogIn className="w-3 h-3 mr-1.5" />
-                Sign in
+              <Button variant="outline" size="sm" onClick={() => navigate('/auth')} className="gap-1">
+                <LogIn className="w-4 h-4" />
+                Login
               </Button>
             )}
           </div>
         </div>
       </header>
 
+      {/* ── Azure mode badge ── */}
+      {mode === 'azure' && isListening && (
+        <div className="bg-emerald-900/30 border-b border-emerald-700/30 px-4 py-1 text-center">
+          <span className="text-xs text-emerald-400 font-sans">
+            🟢 Azure Speech — real-time streaming
+          </span>
+        </div>
+      )}
+      {mode === 'browser' && isListening && (
+        <div className="bg-yellow-900/20 border-b border-yellow-700/30 px-4 py-1 text-center">
+          <span className="text-xs text-yellow-500 font-sans">
+            ⚠️ Browser speech — set VITE_WS_URL for faster recognition
+          </span>
+        </div>
+      )}
+
       {/* ── Main ── */}
-      <main className="relative z-10 flex-1 flex flex-col items-center justify-start px-4 pt-8 pb-4 gap-8">
+      <main className="flex-1 flex flex-col items-center justify-start px-6 py-6 gap-6">
         {loading ? (
-          <div className="flex-1 flex flex-col items-center justify-center gap-4">
-            <div className="relative w-12 h-12">
-              <div className="absolute inset-0 rounded-full border-2 border-gold/20 animate-ping" />
-              <div className="absolute inset-2 rounded-full border-2 border-gold/40 border-t-gold animate-spin" />
-            </div>
-            <p className="text-xs text-muted-foreground font-sans tracking-widest animate-pulse uppercase">
-              Loading…
-            </p>
+          <div className="flex items-center justify-center py-20">
+            <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" />
           </div>
         ) : (
           <QuranDisplay
             words={words}
             currentIndex={currentIndex}
             wordStatuses={wordStatuses}
-            surahName={currentSurahInfo?.name}
-            surahEnglishName={currentSurahInfo?.englishName}
-            surahNumber={selectedSurah}
+            showPending={showPending}
           />
         )}
 
-        {/* Controls */}
-        <div className="w-full max-w-3xl">
-          {/* Divider */}
-          <div className="flex items-center gap-3 mb-6">
-            <div className="flex-1 h-px bg-gradient-to-r from-transparent to-border/30" />
-            <div className="w-1 h-1 rotate-45 bg-gold/30" />
-            <div className="flex-1 h-px bg-gradient-to-l from-transparent to-border/30" />
-          </div>
+        <RecitationControls
+          isRecording={isListening}
+          isConnected={isConnected}
+          onStart={handleStart}
+          onStop={handleStop}
+          onReset={handleReset}
+          progress={progress}
+          totalWords={words.length}
+          completedWords={completedWords}
+          hasWords={words.length > 0}
+        />
 
-          <RecitationControls
-            isRecording={isListening}
-            isConnected={isListening}
-            onStart={handleStart}
-            onStop={handleStop}
-            onReset={handleReset}
-            progress={progress}
-            totalWords={words.length}
-            completedWords={completedWords}
-            hasWords={words.length > 0}
-          />
-        </div>
-
-        {/* Last heard feedback */}
         {lastHeard && (
-          <div className="text-center space-y-1 animate-in fade-in duration-300">
-            <p className="text-[10px] text-muted-foreground/40 font-sans tracking-widest uppercase">
-              Heard
-            </p>
-            <p className="font-quran text-xl text-gold/60">{lastHeard}</p>
+          <div className="text-center space-y-1">
+            <p className="text-xs text-muted-foreground">Last heard:</p>
+            <p className="font-quran text-lg text-gold-dim">{lastHeard}</p>
           </div>
         )}
 
-        {/* Browser warning */}
-        {!isSupported && (
-          <p className="text-xs text-incorrect/70 text-center max-w-sm font-sans">
-            ⚠️ Speech recognition requires Chrome or Edge
-          </p>
+        {speechError && (
+          <p className="text-xs text-incorrect text-center max-w-md">{speechError}</p>
         )}
       </main>
     </div>
