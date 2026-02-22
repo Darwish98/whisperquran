@@ -1,80 +1,113 @@
 /**
  * useAzureSpeech.ts
  *
- * Streams raw PCM audio from the browser mic to your Azure backend via WebSocket.
- * Falls back to browser Web Speech API if VITE_WS_URL is not set.
+ * Streams raw PCM16 mic audio to the backend WebSocket.
+ * Sends a JSON config frame first, then binary audio chunks.
+ * Returns TranscriptionResult objects that include phonetic accuracy scores
+ * from Azure Pronunciation Assessment.
  *
- * Usage in Index.tsx:
- *   const { isListening, isConnected, start, stop, mode } = useAzureSpeech();
- *   start((text) => handleTranscription(text));
+ * Falls back to browser Web Speech API automatically if VITE_WS_URL is not set.
  */
 
 import { useState, useRef, useCallback, useEffect } from 'react';
+import { unlockAudio } from '@/lib/audioPlayer';
 
 const WS_URL = import.meta.env.VITE_WS_URL as string | undefined;
 
-// AudioWorklet processor code — converts Float32 mic input → Int16 PCM chunks
-// Injected as a Blob URL so no separate .js file is needed
+// ── AudioWorklet (PCM Float32→Int16 conversion) ───────────────────────────────
+// Inlined as a Blob URL so no extra build artefact is needed.
 const WORKLET_CODE = `
 class PcmProcessor extends AudioWorkletProcessor {
   process(inputs) {
     const ch = inputs[0]?.[0];
     if (!ch || ch.length === 0) return true;
-    const pcm = new Int16Array(ch.length);
+    const out = new Int16Array(ch.length);
     for (let i = 0; i < ch.length; i++) {
       const s = Math.max(-1, Math.min(1, ch[i]));
-      pcm[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+      out[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
     }
-    this.port.postMessage(pcm.buffer, [pcm.buffer]);
+    this.port.postMessage(out.buffer, [out.buffer]);
     return true;
   }
 }
 registerProcessor('pcm-processor', PcmProcessor);
 `;
 
+// ── Types ─────────────────────────────────────────────────────────────────────
+
 export type SpeechMode = 'azure' | 'browser';
 
-interface UseAzureSpeechReturn {
-  isListening: boolean;
-  isConnected: boolean;
-  start: (onResult: (text: string) => void) => void;
-  stop: () => void;
-  mode: SpeechMode;
-  error: string | null;
+export interface PhoneticScore {
+  accuracyScore:      number;  // 0–100
+  fluencyScore:       number;
+  completenessScore:  number;
+  pronunciationScore: number;
 }
 
-export function useAzureSpeech(): UseAzureSpeechReturn {
-  const [isListening, setIsListening] = useState(false);
-  const [isConnected, setIsConnected] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+export interface WordResult {
+  word:          string;
+  confidence:    number;
+  accuracyScore?: number;
+  errorType?:    string; // 'None' | 'Omission' | 'Insertion' | 'Mispronunciation'
+}
 
-  const wsRef = useRef<WebSocket | null>(null);
-  const audioCtxRef = useRef<AudioContext | null>(null);
-  const workletNodeRef = useRef<AudioWorkletNode | null>(null);
-  const streamRef = useRef<MediaStream | null>(null);
-  const workletUrlRef = useRef<string | null>(null);
-  const onResultRef = useRef<((text: string) => void) | null>(null);
+export interface TranscriptionResult {
+  text:      string;
+  isFinal:   boolean;
+  words?:    WordResult[];
+  phonetic?: PhoneticScore;
+}
+
+interface StartOptions {
+  refText?: string;  // current expected word — sent to backend for Pronunciation Assessment
+}
+
+interface UseAzureSpeechReturn {
+  isListening:  boolean;
+  isConnected:  boolean;
+  mode:         SpeechMode;
+  error:        string | null;
+  start: (onResult: (r: TranscriptionResult) => void, opts?: StartOptions) => void;
+  stop:  () => void;
+  /** Update the pronunciation-assessment reference text mid-session */
+  updateRefText: (text: string) => void;
+}
+
+// ── Hook ──────────────────────────────────────────────────────────────────────
+
+export function useAzureSpeech(): UseAzureSpeechReturn {
+  const [isListening,  setIsListening]  = useState(false);
+  const [isConnected,  setIsConnected]  = useState(false);
+  const [error,        setError]        = useState<string | null>(null);
+
+  const wsRef          = useRef<WebSocket | null>(null);
+  const audioCtxRef    = useRef<AudioContext | null>(null);
+  const workletRef     = useRef<AudioWorkletNode | null>(null);
+  const streamRef      = useRef<MediaStream | null>(null);
+  const workletBlobRef = useRef<string | null>(null);
+  const onResultRef    = useRef<((r: TranscriptionResult) => void) | null>(null);
 
   // Browser fallback refs
-  const recognitionRef = useRef<any>(null);
+  const recogRef         = useRef<any>(null);
   const shouldRestartRef = useRef(false);
 
   const mode: SpeechMode = WS_URL ? 'azure' : 'browser';
 
+  // ── Cleanup ──────────────────────────────────────────────────────────────
+
   const cleanup = useCallback(() => {
-    // Azure path
-    workletNodeRef.current?.disconnect();
-    workletNodeRef.current = null;
+    workletRef.current?.disconnect();
+    workletRef.current = null;
     audioCtxRef.current?.close().catch(() => {});
     audioCtxRef.current = null;
     streamRef.current?.getTracks().forEach(t => t.stop());
     streamRef.current = null;
     wsRef.current?.close();
     wsRef.current = null;
-    // Browser path
+
     shouldRestartRef.current = false;
-    try { recognitionRef.current?.stop(); } catch {}
-    recognitionRef.current = null;
+    try { recogRef.current?.stop(); } catch {}
+    recogRef.current = null;
 
     setIsListening(false);
     setIsConnected(false);
@@ -82,122 +115,153 @@ export function useAzureSpeech(): UseAzureSpeechReturn {
 
   useEffect(() => () => { cleanup(); }, [cleanup]);
 
-  // ── Azure streaming path ──────────────────────────────────────────────────
+  // ── Azure path ────────────────────────────────────────────────────────────
 
-  const startAzure = useCallback(async (onResult: (text: string) => void) => {
+  const startAzure = useCallback(async (
+    onResult: (r: TranscriptionResult) => void,
+    opts: StartOptions = {},
+  ) => {
     setError(null);
     onResultRef.current = onResult;
+    unlockAudio();
 
+    // Open WebSocket
     const ws = new WebSocket(WS_URL!);
     wsRef.current = ws;
     ws.binaryType = 'arraybuffer';
 
     ws.onerror = () => {
-      setError('Cannot connect to Azure backend. Is it running? Check VITE_WS_URL.');
+      setError('Cannot connect to backend. Is it running? Check VITE_WS_URL.');
       cleanup();
     };
 
-    ws.onmessage = (event) => {
+    ws.onmessage = (ev) => {
       try {
-        const msg = JSON.parse(event.data as string);
+        const msg = JSON.parse(ev.data as string);
+        if (msg.type === 'ready') { setIsConnected(true); return; }
         if (msg.type === 'error') { setError(msg.message); return; }
-        if (msg.text && onResultRef.current) {
-          onResultRef.current(msg.text);
+        if (msg.type === 'interim' || msg.type === 'final') {
+          onResultRef.current?.({
+            text:     msg.text ?? '',
+            isFinal:  msg.type === 'final',
+            words:    msg.words,
+            phonetic: msg.phonetic,
+          });
         }
       } catch {
-        if (event.data && onResultRef.current) onResultRef.current(event.data as string);
+        // Non-JSON — ignore
       }
     };
 
-    ws.onclose = () => { setIsConnected(false); };
+    ws.onclose = () => setIsConnected(false);
 
-    // Wait for connection (5s timeout)
-    await new Promise<void>((resolve, reject) => {
-      const t = setTimeout(() => reject(new Error('WebSocket connection timed out')), 5000);
-      ws.addEventListener('open', () => { clearTimeout(t); resolve(); }, { once: true });
-      ws.addEventListener('error', () => { clearTimeout(t); reject(new Error('WebSocket error')); }, { once: true });
+    // Wait for connection (5 s timeout)
+    await new Promise<void>((res, rej) => {
+      const t = setTimeout(() => rej(new Error('WebSocket timeout')), 5000);
+      ws.addEventListener('open',  () => { clearTimeout(t); res(); },  { once: true });
+      ws.addEventListener('error', () => { clearTimeout(t); rej(new Error('WS error')); }, { once: true });
     });
 
-    setIsConnected(true);
+    // ① Send config handshake (MUST arrive before audio)
+    ws.send(JSON.stringify({
+      type:    'config',
+      locale:  'ar-SA',
+      refText: opts.refText ?? null,
+    }));
 
-    // Open microphone at 16kHz mono
+    // ② Open microphone at 16 kHz mono
     const stream = await navigator.mediaDevices.getUserMedia({
-      audio: { channelCount: 1, sampleRate: 16000, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      audio: {
+        channelCount:    1,
+        sampleRate:      16000,
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+      },
     });
     streamRef.current = stream;
 
-    const audioCtx = new AudioContext({ sampleRate: 16000 });
-    audioCtxRef.current = audioCtx;
-
-    // Create worklet blob URL once
-    if (!workletUrlRef.current) {
+    // ③ AudioWorklet → raw PCM16 → WebSocket
+    if (!workletBlobRef.current) {
       const blob = new Blob([WORKLET_CODE], { type: 'application/javascript' });
-      workletUrlRef.current = URL.createObjectURL(blob);
+      workletBlobRef.current = URL.createObjectURL(blob);
     }
 
-    await audioCtx.audioWorklet.addModule(workletUrlRef.current);
-    const source = audioCtx.createMediaStreamSource(stream);
-    const workletNode = new AudioWorkletNode(audioCtx, 'pcm-processor');
-    workletNodeRef.current = workletNode;
+    const audioCtx = new AudioContext({ sampleRate: 16000 });
+    audioCtxRef.current = audioCtx;
+    await audioCtx.audioWorklet.addModule(workletBlobRef.current);
 
-    // Send PCM chunks to backend
-    workletNode.port.onmessage = (e: MessageEvent<ArrayBuffer>) => {
+    const source  = audioCtx.createMediaStreamSource(stream);
+    const worklet = new AudioWorkletNode(audioCtx, 'pcm-processor');
+    workletRef.current = worklet;
+
+    worklet.port.onmessage = (e: MessageEvent<ArrayBuffer>) => {
       if (ws.readyState === WebSocket.OPEN) ws.send(e.data);
     };
 
-    source.connect(workletNode);
-    // Don't connect to destination — no echo
+    source.connect(worklet);
+    // Do NOT connect worklet → destination (avoids echo)
     setIsListening(true);
   }, [cleanup]);
 
   // ── Browser Web Speech API fallback ──────────────────────────────────────
 
-  const startBrowser = useCallback((onResult: (text: string) => void) => {
+  const startBrowser = useCallback((
+    onResult: (r: TranscriptionResult) => void,
+    _opts: StartOptions = {},
+  ) => {
     setError(null);
     onResultRef.current = onResult;
     shouldRestartRef.current = true;
+    unlockAudio();
 
-    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (!SpeechRecognition) {
-      setError('Speech recognition not supported. Use Chrome or Edge, or set VITE_WS_URL.');
+    const SR =
+      (window as any).SpeechRecognition ||
+      (window as any).webkitSpeechRecognition;
+
+    if (!SR) {
+      setError('Speech recognition not supported. Use Chrome or Edge, or set VITE_WS_URL for Azure.');
       return;
     }
 
-    const createRec = () => {
-      const rec = new SpeechRecognition();
-      rec.lang = 'ar-SA';
-      rec.continuous = true;
-      rec.interimResults = false;
-      rec.maxAlternatives = 5;
+    const rec = new SR();
+    rec.lang = 'ar-SA';
+    rec.continuous = true;
+    rec.interimResults = true;
+    rec.maxAlternatives = 5;
 
-      rec.onresult = (event: any) => {
-        for (let i = event.resultIndex; i < event.results.length; i++) {
-          const result = event.results[i];
-          if (result.isFinal) {
-            for (let j = 0; j < result.length; j++) {
-              const t = result[j].transcript?.trim();
-              if (t && onResultRef.current) onResultRef.current(t);
-            }
-          }
-        }
-      };
-
-      rec.onerror = (e: any) => {
-        if (['no-speech', 'audio-capture', 'network'].includes(e.error) && shouldRestartRef.current) {
-          setTimeout(() => { try { rec.start(); } catch {} }, 300);
-        }
-      };
-
-      rec.onend = () => {
-        if (shouldRestartRef.current) setTimeout(() => { try { rec.start(); } catch {} }, 100);
-        else { setIsListening(false); setIsConnected(false); }
-      };
-
-      return rec;
+    rec.onresult = (ev: any) => {
+      for (let i = ev.resultIndex; i < ev.results.length; i++) {
+        const r   = ev.results[i];
+        const txt = r[0]?.transcript?.trim();
+        if (!txt) continue;
+        onResultRef.current?.({
+          text:    txt,
+          isFinal: r.isFinal,
+          words:   Array.from({ length: r.length }, (_: unknown, j: number) => ({
+            word:       r[j]?.transcript?.trim() ?? '',
+            confidence: r[j]?.confidence        ?? 1,
+          })),
+        });
+      }
     };
 
-    const rec = createRec();
-    recognitionRef.current = rec;
+    rec.onerror = (e: any) => {
+      if (['no-speech', 'audio-capture', 'network'].includes(e.error) && shouldRestartRef.current) {
+        setTimeout(() => { try { rec.start(); } catch {} }, 300);
+      }
+    };
+
+    rec.onend = () => {
+      if (shouldRestartRef.current) {
+        setTimeout(() => { try { rec.start(); } catch {} }, 100);
+      } else {
+        setIsListening(false);
+        setIsConnected(false);
+      }
+    };
+
+    recogRef.current = rec;
     try {
       rec.start();
       setIsListening(true);
@@ -209,19 +273,29 @@ export function useAzureSpeech(): UseAzureSpeechReturn {
 
   // ── Public API ────────────────────────────────────────────────────────────
 
-  const start = useCallback((onResult: (text: string) => void) => {
+  const start = useCallback((
+    onResult: (r: TranscriptionResult) => void,
+    opts: StartOptions = {},
+  ) => {
     if (mode === 'azure') {
-      startAzure(onResult).catch(err => {
+      startAzure(onResult, opts).catch(err => {
         console.warn('Azure failed, falling back to browser:', err);
         setError(null);
-        startBrowser(onResult);
+        startBrowser(onResult, opts);
       });
     } else {
-      startBrowser(onResult);
+      startBrowser(onResult, opts);
     }
   }, [mode, startAzure, startBrowser]);
 
-  const stop = useCallback(() => { cleanup(); }, [cleanup]);
+  const stop = useCallback(() => cleanup(), [cleanup]);
 
-  return { isListening, isConnected, start, stop, mode, error };
+  /** Send updated reference text to backend for next Pronunciation Assessment utterance */
+  const updateRefText = useCallback((text: string) => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'refText', text }));
+    }
+  }, []);
+
+  return { isListening, isConnected, mode, error, start, stop, updateRefText };
 }
