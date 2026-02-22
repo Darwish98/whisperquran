@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Amiri:wght@400;700&family=IBM+Plex+Sans+Arabic:wght@300;400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Amiri:ital,wght@0,400;0,700;1,400&family=IBM+Plex+Sans+Arabic:wght@300;400;500;600&display=swap');
 
 @tailwind base;
 @tailwind components;
@@ -6,53 +6,53 @@
 
 @layer base {
   :root {
-    --background: 160 20% 6%;
-    --foreground: 45 30% 90%;
+    --background: 158 22% 5%;
+    --foreground: 44 25% 88%;
 
-    --card: 160 18% 9%;
-    --card-foreground: 45 30% 90%;
+    --card: 158 18% 8%;
+    --card-foreground: 44 25% 88%;
 
-    --popover: 160 18% 9%;
-    --popover-foreground: 45 30% 90%;
+    --popover: 158 18% 8%;
+    --popover-foreground: 44 25% 88%;
 
-    --primary: 45 70% 55%;
-    --primary-foreground: 160 20% 6%;
+    --primary: 44 72% 52%;
+    --primary-foreground: 158 22% 5%;
 
-    --secondary: 160 15% 15%;
-    --secondary-foreground: 45 30% 90%;
+    --secondary: 158 14% 14%;
+    --secondary-foreground: 44 25% 88%;
 
-    --muted: 160 12% 14%;
-    --muted-foreground: 160 10% 50%;
+    --muted: 158 12% 12%;
+    --muted-foreground: 158 8% 46%;
 
-    --accent: 155 40% 20%;
-    --accent-foreground: 45 30% 95%;
+    --accent: 153 35% 18%;
+    --accent-foreground: 44 25% 95%;
 
-    --destructive: 0 65% 50%;
+    --destructive: 2 62% 48%;
     --destructive-foreground: 0 0% 100%;
 
-    --border: 160 15% 18%;
-    --input: 160 15% 18%;
-    --ring: 45 70% 55%;
+    --border: 158 14% 16%;
+    --input: 158 14% 16%;
+    --ring: 44 72% 52%;
 
     --radius: 0.75rem;
 
-    --gold: 45 70% 55%;
-    --gold-dim: 45 50% 35%;
-    --emerald: 155 40% 25%;
-    --emerald-deep: 160 30% 12%;
-    --correct: 145 60% 40%;
-    --incorrect: 0 65% 50%;
-    --highlight: 48 90% 55%;
-    --highlight-foreground: 160 20% 6%;
+    --gold: 44 72% 52%;
+    --gold-dim: 44 48% 30%;
+    --emerald: 153 35% 22%;
+    --emerald-deep: 158 28% 10%;
+    --correct: 142 55% 38%;
+    --incorrect: 2 62% 48%;
+    --highlight: 46 92% 52%;
+    --highlight-foreground: 158 22% 5%;
 
-    --sidebar-background: 160 18% 9%;
-    --sidebar-foreground: 45 30% 90%;
-    --sidebar-primary: 45 70% 55%;
-    --sidebar-primary-foreground: 160 20% 6%;
-    --sidebar-accent: 155 40% 20%;
-    --sidebar-accent-foreground: 45 30% 95%;
-    --sidebar-border: 160 15% 18%;
-    --sidebar-ring: 45 70% 55%;
+    --sidebar-background: 158 18% 8%;
+    --sidebar-foreground: 44 25% 88%;
+    --sidebar-primary: 44 72% 52%;
+    --sidebar-primary-foreground: 158 22% 5%;
+    --sidebar-accent: 153 35% 18%;
+    --sidebar-accent-foreground: 44 25% 95%;
+    --sidebar-border: 158 14% 16%;
+    --sidebar-ring: 44 72% 52%;
   }
 }
 
@@ -62,14 +62,30 @@
   }
 
   body {
-    @apply bg-background text-foreground font-sans antialiased;
+    @apply bg-background text-foreground antialiased;
     font-family: 'IBM Plex Sans Arabic', sans-serif;
+  }
+
+  /* Smooth scrollbar for dark theme */
+  ::-webkit-scrollbar {
+    width: 4px;
+  }
+  ::-webkit-scrollbar-track {
+    background: hsl(var(--background));
+  }
+  ::-webkit-scrollbar-thumb {
+    background: hsl(var(--border));
+    border-radius: 2px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: hsl(var(--gold-dim));
   }
 }
 
 @layer utilities {
   .font-quran {
     font-family: 'Amiri', serif;
+    line-height: 1.9;
   }
 
   .text-gold {
@@ -78,10 +94,6 @@
 
   .text-gold-dim {
     color: hsl(var(--gold-dim));
-  }
-
-  .bg-emerald-deep {
-    background-color: hsl(var(--emerald-deep));
   }
 
   .text-correct {
@@ -94,28 +106,67 @@
 
   .bg-highlight {
     background-color: hsl(var(--highlight));
-    color: hsl(var(--highlight-foreground));
   }
 
+  /* Gold text glow */
   .glow-gold {
-    text-shadow: 0 0 20px hsl(45 70% 55% / 0.3), 0 0 40px hsl(45 70% 55% / 0.1);
+    text-shadow:
+      0 0 20px hsl(44 72% 52% / 0.35),
+      0 0 50px hsl(44 72% 52% / 0.12);
   }
 
+  /* Current word glow pulse */
   .glow-pulse {
     animation: glow-pulse 2s ease-in-out infinite;
   }
 
   @keyframes glow-pulse {
-    0%, 100% { text-shadow: 0 0 10px hsl(45 70% 55% / 0.2); }
-    50% { text-shadow: 0 0 25px hsl(45 70% 55% / 0.4), 0 0 50px hsl(45 70% 55% / 0.15); }
+    0%, 100% {
+      text-shadow: 0 0 10px hsl(44 72% 52% / 0.25);
+    }
+    50% {
+      text-shadow:
+        0 0 20px hsl(44 72% 52% / 0.5),
+        0 0 50px hsl(44 72% 52% / 0.2);
+    }
   }
 
+  /* Mic recording pulse */
   .recording-pulse {
-    animation: recording-pulse 1.5s ease-in-out infinite;
+    animation: recording-pulse 1.8s ease-in-out infinite;
   }
 
   @keyframes recording-pulse {
-    0%, 100% { box-shadow: 0 0 0 0 hsl(0 65% 50% / 0.4); }
-    50% { box-shadow: 0 0 0 12px hsl(0 65% 50% / 0); }
+    0%, 100% {
+      box-shadow: 0 0 0 0 hsl(2 62% 48% / 0.5);
+    }
+    50% {
+      box-shadow: 0 0 0 14px hsl(2 62% 48% / 0);
+    }
+  }
+
+  /* Progress bar shimmer */
+  @keyframes shimmer {
+    0% { opacity: 0; transform: translateX(-100%); }
+    50% { opacity: 1; }
+    100% { opacity: 0; transform: translateX(200%); }
+  }
+
+  /* Incorrect word shake */
+  @keyframes shake {
+    0%, 100% { transform: translateX(0); }
+    20% { transform: translateX(-4px); }
+    40% { transform: translateX(4px); }
+    60% { transform: translateX(-3px); }
+    80% { transform: translateX(3px); }
+  }
+
+  .animate-shake {
+    animation: shake 0.35s ease-in-out;
+  }
+
+  /* Delay utility for ping animations */
+  .animation-delay-300 {
+    animation-delay: 300ms;
   }
 }

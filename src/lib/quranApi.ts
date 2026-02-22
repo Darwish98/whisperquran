@@ -20,10 +20,8 @@ export interface AyahData {
 }
 
 const SURAH_LIST_URL = 'https://api.alquran.cloud/v1/surah';
-// Use Uthmani script for authoritative text
 const SURAH_TEXT_URL = (num: number) => `https://api.alquran.cloud/v1/surah/${num}/quran-uthmani`;
 
-// Word-level audio from everyayah.com
 export function getWordAudioUrl(surahNumber: number, ayahNumber: number, wordIndex: number): string {
   const s = String(surahNumber).padStart(3, '0');
   const a = String(ayahNumber).padStart(3, '0');
@@ -31,7 +29,6 @@ export function getWordAudioUrl(surahNumber: number, ayahNumber: number, wordInd
   return `https://audio.qurancdn.com/wbw/001_${s}_${a}_${w}.mp3`;
 }
 
-// Ayah-level audio (Mishary Rashid Alafasy)
 export function getAyahAudioUrl(surahNumber: number, ayahNumber: number): string {
   const s = String(surahNumber).padStart(3, '0');
   const a = String(ayahNumber).padStart(3, '0');
@@ -44,27 +41,75 @@ export async function fetchSurahList(): Promise<SurahInfo[]> {
   return data.data;
 }
 
+/**
+ * Removes ALL diacritics/tashkeel for comparison purposes only
+ */
+function stripDiacritics(text: string): string {
+  return text.replace(/[\u0610-\u061A\u064B-\u065F\u0670\u06D6-\u06DC\u06DF-\u06E4\u06E7\u06E8\u06EA-\u06ED]/g, '');
+}
+
+/**
+ * Normalize alef variants for comparison
+ */
+function normalizeAlef(text: string): string {
+  return text.replace(/[\u0622\u0623\u0625\u0671]/g, '\u0627');
+}
+
+/**
+ * The Bismillah phrase (bare consonantal skeleton after stripping diacritics + normalizing alef)
+ * This matches ANY orthographic variant the API might return.
+ *
+ * بسم الله الرحمن الرحيم
+ */
+const BISMILLAH_SKELETON = normalizeAlef(stripDiacritics('بسم الله الرحمن الرحيم'));
+
+/**
+ * Checks whether the START of an ayah text (stripped + normalized) begins with Bismillah.
+ * Returns the character count to remove from the ORIGINAL text if so, else 0.
+ */
+function bismillahPrefixLength(originalText: string): number {
+  const stripped = normalizeAlef(stripDiacritics(originalText));
+  if (!stripped.startsWith(BISMILLAH_SKELETON)) return 0;
+
+  // Walk original text consuming characters until we've matched BISMILLAH_SKELETON.length
+  // stripped chars (non-diacritic chars map 1:1 to original non-diacritic chars).
+  let origIdx = 0;
+  let skelIdx = 0;
+  while (origIdx < originalText.length && skelIdx < BISMILLAH_SKELETON.length) {
+    const origChar = originalText[origIdx];
+    const origNorm = normalizeAlef(stripDiacritics(origChar));
+    if (origNorm.length > 0) {
+      skelIdx += origNorm.length;
+    }
+    origIdx++;
+  }
+  // Skip any trailing whitespace after the bismillah in the original
+  while (origIdx < originalText.length && /\s/.test(originalText[origIdx])) origIdx++;
+  return origIdx;
+}
+
+/**
+ * Surat At-Tawbah (9) has NO Bismillah at all.
+ * Surat Al-Fatiha (1): Bismillah IS ayah 1 — keep it as words to recite.
+ * All other surahs: Bismillah prefixes ayah 1 in the API response — strip it.
+ */
 export async function fetchSurahText(surahNumber: number): Promise<QuranWord[]> {
   const res = await fetch(SURAH_TEXT_URL(surahNumber));
   const data = await res.json();
   const ayahs: AyahData[] = data.data.ayahs;
-  
+
   const words: QuranWord[] = [];
   let globalIndex = 0;
-  
+
   for (const ayah of ayahs) {
-    // Skip Bismillah for all surahs except Al-Fatiha (1) and At-Tawbah (9, has no Bismillah)
     let text = ayah.text;
-    if (surahNumber !== 1 && ayah.numberInSurah === 1) {
-      // Remove the Bismillah prefix if present
-      const bismillah = 'بِسْمِ ٱللَّهِ ٱلرَّحْمَٰنِ ٱلرَّحِيمِ';
-      if (text.startsWith(bismillah)) {
-        text = text.slice(bismillah.length).trim();
-      }
-      // Also try without specific diacritics
-      const bismillahAlt = 'بِسْمِ اللَّهِ الرَّحْمَنِ الرَّحِيمِ';
-      if (text.startsWith(bismillahAlt)) {
-        text = text.slice(bismillahAlt.length).trim();
+
+    // For all surahs except Al-Fatiha (1) and At-Tawbah (9),
+    // strip Bismillah from the beginning of ayah 1.
+    if (surahNumber !== 1 && surahNumber !== 9 && ayah.numberInSurah === 1) {
+      const prefixLen = bismillahPrefixLength(text);
+      if (prefixLen > 0) {
+        text = text.slice(prefixLen).trim();
       }
     }
 
@@ -78,6 +123,6 @@ export async function fetchSurahText(surahNumber: number): Promise<QuranWord[]> 
       });
     }
   }
-  
+
   return words;
 }

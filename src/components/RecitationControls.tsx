@@ -1,6 +1,6 @@
-import { Mic, MicOff, RotateCcw } from 'lucide-react';
+import { Mic, MicOff, RotateCcw, ChevronRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Progress } from '@/components/ui/progress';
+import { cn } from '@/lib/utils';
 
 interface RecitationControlsProps {
   isRecording: boolean;
@@ -16,6 +16,7 @@ interface RecitationControlsProps {
 
 export function RecitationControls({
   isRecording,
+  isConnected,
   onStart,
   onStop,
   onReset,
@@ -25,50 +26,113 @@ export function RecitationControls({
   hasWords,
 }: RecitationControlsProps) {
   return (
-    <div className="w-full max-w-2xl mx-auto space-y-4">
-      <div className="flex items-center justify-center gap-4">
-        {!isRecording ? (
-          <Button
-            onClick={onStart}
-            disabled={!hasWords}
-            size="lg"
-            className="bg-primary text-primary-foreground hover:bg-primary/90 gap-2 px-8"
-          >
-            <Mic className="w-5 h-5" />
-            Start Reciting
-          </Button>
-        ) : (
-          <Button
-            onClick={onStop}
-            size="lg"
-            variant="destructive"
-            className="gap-2 px-8"
-          >
-            <div className="recording-pulse w-3 h-3 rounded-full bg-destructive-foreground" />
-            <MicOff className="w-5 h-5" />
-            Stop
-          </Button>
-        )}
-        <Button
-          onClick={onReset}
-          variant="outline"
-          size="lg"
-          className="border-border text-foreground hover:bg-secondary gap-2"
-        >
-          <RotateCcw className="w-4 h-4" />
-          Reset
-        </Button>
-      </div>
-
-      {hasWords && (
-        <div className="space-y-2">
-          <div className="flex justify-between text-sm text-muted-foreground">
-            <span>{completedWords} / {totalWords} words</span>
-            <span>{Math.round(progress)}%</span>
+    <div className="w-full max-w-3xl mx-auto">
+      {/* Progress bar */}
+      {hasWords && totalWords > 0 && (
+        <div className="mb-6 px-2">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-xs font-sans text-muted-foreground tracking-wide">
+              Progress
+            </span>
+            <span className="text-xs font-sans text-muted-foreground">
+              <span className="text-gold">{completedWords}</span>
+              <span className="opacity-40 mx-1">/</span>
+              {totalWords} words
+            </span>
           </div>
-          <Progress value={progress} className="h-2 bg-secondary [&>div]:bg-primary" />
+          <div className="relative h-1 w-full rounded-full bg-border/30 overflow-hidden">
+            {/* Track */}
+            <div
+              className="absolute inset-y-0 left-0 rounded-full bg-gradient-to-r from-emerald-600 to-gold transition-all duration-500 ease-out"
+              style={{ width: `${Math.min(100, progress)}%` }}
+            />
+            {/* Shimmer */}
+            {isRecording && progress < 100 && (
+              <div
+                className="absolute inset-y-0 rounded-full bg-white/20 animate-[shimmer_2s_ease-in-out_infinite]"
+                style={{ width: '30%', left: `${Math.max(0, progress - 15)}%` }}
+              />
+            )}
+          </div>
+          {progress >= 100 && (
+            <p className="text-center text-xs text-correct mt-2 font-sans">
+              ماشاء الله — Surah Complete! 🎉
+            </p>
+          )}
         </div>
       )}
+
+      {/* Controls row */}
+      <div className="flex items-center justify-center gap-4">
+        {/* Reset */}
+        <button
+          onClick={onReset}
+          disabled={!hasWords}
+          className={cn(
+            'w-10 h-10 rounded-full border border-border/50 flex items-center justify-center',
+            'text-muted-foreground hover:text-foreground hover:border-border transition-all duration-200',
+            'disabled:opacity-20 disabled:cursor-not-allowed',
+          )}
+          title="Reset"
+        >
+          <RotateCcw className="w-4 h-4" />
+        </button>
+
+        {/* Main mic button */}
+        <button
+          onClick={isRecording ? onStop : onStart}
+          disabled={!hasWords}
+          className={cn(
+            'relative w-20 h-20 rounded-full flex items-center justify-center',
+            'transition-all duration-300 disabled:opacity-30 disabled:cursor-not-allowed',
+            isRecording
+              ? [
+                  'bg-incorrect/10 border-2 border-incorrect',
+                  'shadow-[0_0_0_0_rgba(220,50,50,0.4)]',
+                  'recording-pulse',
+                ]
+              : [
+                  'bg-gold/10 border-2 border-gold/70',
+                  'hover:bg-gold/20 hover:border-gold hover:shadow-[0_0_30px_rgba(180,140,60,0.3)]',
+                ],
+          )}
+          title={isRecording ? 'Stop' : 'Start reciting'}
+        >
+          {/* Outer ring animation when recording */}
+          {isRecording && (
+            <>
+              <span className="absolute inset-0 rounded-full border-2 border-incorrect/40 animate-ping" />
+              <span className="absolute inset-[-8px] rounded-full border border-incorrect/20 animate-ping animation-delay-300" />
+            </>
+          )}
+
+          {isRecording ? (
+            <MicOff className="w-7 h-7 text-incorrect relative z-10" />
+          ) : (
+            <Mic className="w-7 h-7 text-gold relative z-10" />
+          )}
+        </button>
+
+        {/* Status / next word hint */}
+        <div className="w-10 h-10 flex items-center justify-center">
+          {isRecording && (
+            <ChevronRight className="w-4 h-4 text-muted-foreground/40 animate-pulse" />
+          )}
+        </div>
+      </div>
+
+      {/* Status text */}
+      <div className="text-center mt-4 h-6">
+        {isRecording ? (
+          <p className="text-xs font-sans text-muted-foreground animate-pulse tracking-widest uppercase">
+            Listening…
+          </p>
+        ) : hasWords && completedWords === 0 ? (
+          <p className="text-xs font-sans text-muted-foreground/50 tracking-wide">
+            Tap the microphone to begin
+          </p>
+        ) : null}
+      </div>
     </div>
   );
 }
