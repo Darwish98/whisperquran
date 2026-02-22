@@ -14,7 +14,99 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      profiles: {
+        Row: {
+          avatar_url: string | null
+          created_at: string
+          display_name: string | null
+          id: string
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          avatar_url?: string | null
+          created_at?: string
+          display_name?: string | null
+          id?: string
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          avatar_url?: string | null
+          created_at?: string
+          display_name?: string | null
+          id?: string
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
+      recitation_history: {
+        Row: {
+          accuracy: number | null
+          created_at: string
+          duration_seconds: number | null
+          id: string
+          surah_number: number
+          user_id: string
+          words_attempted: number
+          words_correct: number
+        }
+        Insert: {
+          accuracy?: number | null
+          created_at?: string
+          duration_seconds?: number | null
+          id?: string
+          surah_number: number
+          user_id: string
+          words_attempted?: number
+          words_correct?: number
+        }
+        Update: {
+          accuracy?: number | null
+          created_at?: string
+          duration_seconds?: number | null
+          id?: string
+          surah_number?: number
+          user_id?: string
+          words_attempted?: number
+          words_correct?: number
+        }
+        Relationships: []
+      }
+      user_progress: {
+        Row: {
+          completed: boolean
+          correct_words: number
+          id: string
+          last_word_index: number
+          surah_number: number
+          total_words: number
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          completed?: boolean
+          correct_words?: number
+          id?: string
+          last_word_index?: number
+          surah_number: number
+          total_words?: number
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          completed?: boolean
+          correct_words?: number
+          id?: string
+          last_word_index?: number
+          surah_number?: number
+          total_words?: number
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
