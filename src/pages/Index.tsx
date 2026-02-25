@@ -9,6 +9,7 @@ import { playAudio, preloadWordAudio, unlockAudio } from '@/lib/audioPlayer';
 import { SurahSelector } from '@/components/SurahSelector';
 import { QuranDisplay } from '@/components/QuranDisplay';
 import { RecitationControls } from '@/components/RecitationControls';
+import { MicStatus } from '@/components/MicStatus';
 import { useAzureSpeech, type TranscriptionResult } from '@/hooks/useAzureSpeech';
 import { useAuth } from '@/hooks/useAuth';
 import { useUserProgress } from '@/hooks/useUserProgress';
@@ -46,7 +47,7 @@ export default function Index() {
   const [phoneticInfo,   setPhoneticInfo]   = useState<string | null>(null);
   const [isDark,         setIsDark]         = useState(true);
   const [showPending,    setShowPending]    = useState(true);
-  const [audioHelp,      setAudioHelp]      = useState(true); // toggle for 3-strikes audio
+  const [audioHelp,      setAudioHelp]      = useState(true);
   const [reciter,        setReciter]        = useState<Reciter>(DEFAULT_RECITER);
 
   const currentIndexRef    = useRef(0);
@@ -55,7 +56,6 @@ export default function Index() {
   const wordsAttemptedRef  = useRef(0);
   const reciterRef         = useRef<Reciter>(DEFAULT_RECITER);
 
-  // Keep ref in sync so the transcription callback (stale closure) always uses latest reciter
   useEffect(() => { reciterRef.current = reciter; }, [reciter]);
 
   const { isListening, isConnected, start, stop, updateRefText, mode, error: speechError } =
@@ -66,69 +66,51 @@ export default function Index() {
   const navigate                                = useNavigate();
 
   const completedWords = [...wordStatuses.values()].filter(s => s.state === 'correct').length;
-  const progress       = words.length > 0 ? (completedWords / words.length) * 100 : 0;
+  const progress       = words.length > 0 ? Math.round((completedWords / words.length) * 100) : 0;
   const currentSurah   = surahList.find(s => s.number === selectedSurah);
-
-  // ── Dark / light mode ─────────────────────────────────────────────────────
-  useEffect(() => {
-    document.documentElement.classList.toggle('light', !isDark);
-  }, [isDark]);
 
   // ── Load surah list once ──────────────────────────────────────────────────
   useEffect(() => {
     fetchSurahList().then(setSurahList).catch(console.error);
   }, []);
 
-  // ── Preload upcoming ayah audio for selected reciter ──────────────────────
-  useEffect(() => {
-    if (!words.length || currentIndex >= words.length) return;
-    const upcoming = words.slice(currentIndex, currentIndex + 5);
-    const urls = [...new Set(
-      upcoming.map(w => getAyahAudioUrl(selectedSurah, w.ayahNumber, reciter.id))
-    )];
-    preloadWordAudio(urls);
-  }, [currentIndex, words, selectedSurah, reciter]);
-
   // ── Load surah text ───────────────────────────────────────────────────────
-  const handleSurahSelect = useCallback(async (surahNumber: number) => {
-    setSelectedSurah(surahNumber);
-    selectedSurahRef.current = surahNumber;
-    stop();
+  const handleSurahSelect = useCallback(async (num: number) => {
+    if (isListening) stop();
+    setSelectedSurah(num);
+    selectedSurahRef.current = num;
+    setLoading(true);
     setLastHeard('');
     setPhoneticInfo(null);
-    setLoading(true);
+
     try {
-      const surahWords = await fetchSurahText(surahNumber);
-      setWords(surahWords);
-      wordsRef.current = surahWords;
+      const w = await fetchSurahText(num);
+      setWords(w);
+      wordsRef.current = w;
       setCurrentIndex(0);
       currentIndexRef.current = 0;
+
       const statuses = new Map<number, WordStatus>();
-      surahWords.forEach((_, i) =>
-        statuses.set(i, { state: i === 0 ? 'current' : 'pending', retries: 0 })
-      );
+      w.forEach((_, i) => statuses.set(i, { state: i === 0 ? 'current' : 'pending', retries: 0 }));
       setWordStatuses(statuses);
-    } catch {
-      toast({ title: 'Error', description: 'Failed to load Surah', variant: 'destructive' });
+
+      // Preload audio for first few ayahs
+      const firstAyahs = [...new Set(w.slice(0, 30).map(word => word.ayahNumber))];
+      const urls = firstAyahs.map(ay => getAyahAudioUrl(num, ay, reciterRef.current.id));
+      preloadWordAudio(urls);
+    } catch (err) {
+      console.error('Failed to load surah:', err);
+      toast({ title: 'Error', description: 'Failed to load surah text', variant: 'destructive' });
     } finally {
       setLoading(false);
     }
-  }, [toast, stop]);
+  }, [isListening, stop, toast]);
 
+  // Load default surah on mount
   useEffect(() => { handleSurahSelect(1); }, []);
-
-  // ── Auto-save ─────────────────────────────────────────────────────────────
-  useEffect(() => {
-    if (!user || !words.length) return;
-    const iv = setInterval(() => {
-      saveProgress(selectedSurah, currentIndexRef.current, words.length, completedWords, progress >= 100);
-    }, 10_000);
-    return () => clearInterval(iv);
-  }, [user, selectedSurah, words.length, completedWords, progress, saveProgress]);
 
   // ── Transcription handler ─────────────────────────────────────────────────
   const handleTranscription = useCallback((result: TranscriptionResult) => {
-    // Show interim text while speaking
     if (!result.isFinal) {
       setLastHeard(result.text);
       return;
@@ -136,48 +118,54 @@ export default function Index() {
 
     setLastHeard(result.text);
 
-    // Show phonetic accuracy if Azure returned it
+    // Show phonetic info if available
     if (result.phonetic) {
-      const { accuracyScore, fluencyScore } = result.phonetic;
+      const p = result.phonetic;
       setPhoneticInfo(
-        `Accuracy ${Math.round(accuracyScore)}% · Fluency ${Math.round(fluencyScore)}%`
+        `Accuracy: ${p.accuracyScore}% · Fluency: ${p.fluencyScore}% · Pronunciation: ${p.pronunciationScore}%`
       );
-    } else {
-      setPhoneticInfo(null);
     }
 
-    const idx = currentIndexRef.current;
     const w   = wordsRef.current;
-    if (idx >= w.length) return;
+    const idx = currentIndexRef.current;
+    if (!w.length || idx >= w.length) return;
+
     wordsAttemptedRef.current++;
 
-    const matchCount = matchConsecutiveWords(result.text, w, idx);
+    // Try to match recognized text against current and nearby words
+    const matchResult = matchConsecutiveWords(
+      result.text,
+      w.slice(idx, idx + 5).map(x => x.text),
+    );
 
     setWordStatuses(prev => {
       const next = new Map(prev);
 
-      if (matchCount > 0) {
-        // Mark matched words correct
-        for (let i = 0; i < matchCount; i++) {
-          const cur = next.get(idx + i) ?? { state: 'current' as const, retries: 0 };
-          next.set(idx + i, { state: 'correct', retries: cur.retries });
+      if (matchResult.matched > 0) {
+        // Mark matched words as correct
+        for (let i = 0; i < matchResult.matched; i++) {
+          next.set(idx + i, { state: 'correct', retries: 0 });
         }
 
-        const nextIdx = idx + matchCount;
+        const newIndex = idx + matchResult.matched;
+        currentIndexRef.current = newIndex;
+        setCurrentIndex(newIndex);
 
-        if (nextIdx < w.length) {
-          next.set(nextIdx, { state: 'current', retries: 0 });
-          setCurrentIndex(nextIdx);
-          currentIndexRef.current = nextIdx;
+        // Update ref text for pronunciation assessment
+        if (newIndex < w.length) {
+          next.set(newIndex, { state: 'current', retries: 0 });
+          updateRefText(w[newIndex].text);
+        }
 
-          // Update pronunciation-assessment reference text for next word
-          updateRefText(w[nextIdx].text);
-        } else {
-          // Surah complete
-          setCurrentIndex(nextIdx);
-          currentIndexRef.current = nextIdx;
+        // Preload audio for upcoming ayahs
+        const nextAyahs = [...new Set(w.slice(newIndex, newIndex + 20).map(x => x.ayahNumber))];
+        const urls = nextAyahs.map(ay => getAyahAudioUrl(selectedSurahRef.current, ay, reciterRef.current.id));
+        preloadWordAudio(urls);
+
+        // Check surah completion
+        if (newIndex >= w.length) {
           stop();
-          toast({ title: '🎉 ماشاء الله!', description: 'Surah complete!' });
+          toast({ title: 'ماشاء الله', description: 'Surah complete!' });
           if (sessionStartRef.current > 0) {
             const dur = Math.floor((Date.now() - sessionStartRef.current) / 1000);
             saveRecitationHistory(selectedSurahRef.current, dur, wordsAttemptedRef.current, w.length);
@@ -196,8 +184,15 @@ export default function Index() {
             w[idx].ayahNumber,
             reciterRef.current.id,
           );
-          // playAudio uses AudioContext — works even while mic is active
-          playAudio(url).catch(console.error);
+          playAudio(url).then(success => {
+            if (!success) {
+              toast({
+                title: '🔇 Audio blocked',
+                description: 'Click anywhere to enable audio, then try again.',
+                variant: 'destructive',
+              });
+            }
+          });
           toast({
             title: `🔊 ${reciterRef.current.nameAr}`,
             description: 'Listen and repeat',
@@ -222,13 +217,27 @@ export default function Index() {
   // ── Start / Stop / Reset ──────────────────────────────────────────────────
   const handleStart = useCallback(() => {
     if (!words.length) return;
+
+    // SECURITY: Require authenticated user before allowing recitation
+    if (!user) {
+      toast({
+        title: 'Login required',
+        description: 'Please sign in to use the recitation feature.',
+        variant: 'destructive',
+      });
+      navigate('/auth');
+      return;
+    }
+
     // CRITICAL: unlockAudio must be called synchronously inside a click handler
+    // This satisfies browser autoplay policy for ALL future playAudio() calls
     unlockAudio();
+
     sessionStartRef.current  = Date.now();
     wordsAttemptedRef.current = 0;
     const currentWord = wordsRef.current[currentIndexRef.current];
     start(handleTranscription, { refText: currentWord?.text });
-  }, [words, start, handleTranscription]);
+  }, [words, user, start, handleTranscription, toast, navigate]);
 
   const handleStop = useCallback(() => {
     stop();
@@ -256,10 +265,10 @@ export default function Index() {
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
-    <div className="min-h-screen bg-background flex flex-col transition-colors duration-300">
+    <div className="min-h-[100dvh] bg-background flex flex-col transition-colors duration-300">
 
       {/* ── Sticky header ── */}
-      <header className="border-b border-border/50 px-4 py-3 sticky top-0 z-40 bg-background/90 backdrop-blur-sm">
+      <header className="border-b border-border/50 px-4 py-3 sticky top-0 z-40 bg-background/90 backdrop-blur-sm shrink-0">
         <div className="max-w-5xl mx-auto flex items-center justify-between gap-2 flex-wrap">
 
           {/* Logo */}
@@ -295,7 +304,6 @@ export default function Index() {
               <SelectContent className="bg-card border-border z-50 max-h-80 overflow-y-auto">
                 {Object.entries(RECITERS_BY_RIWAYA).map(([riwaya, reciters]) => (
                   <div key={riwaya}>
-                    {/* Riwaya heading */}
                     <div className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/50 border-b border-border/30">
                       {riwaya}
                     </div>
@@ -312,7 +320,7 @@ export default function Index() {
               </SelectContent>
             </Select>
 
-            {/* Audio-help toggle (speaker icon) */}
+            {/* Audio-help toggle */}
             <Button
               variant={audioHelp ? 'default' : 'outline'}
               size="icon"
@@ -321,7 +329,7 @@ export default function Index() {
                 ? 'Audio help ON — plays recitation after 3 wrong attempts. Click to disable.'
                 : 'Audio help OFF — click to enable.'}
               onClick={() => {
-                unlockAudio();           // unlock on this gesture too
+                unlockAudio();
                 setAudioHelp(h => !h);
               }}
             >
@@ -334,7 +342,7 @@ export default function Index() {
             <Button
               variant="outline" size="icon"
               className="shrink-0 border-border/50"
-              title={showPending ? 'Hide upcoming ayahs' : 'Show upcoming ayahs'}
+              title={showPending ? 'Hide upcoming ayahs (show only numbers)' : 'Show upcoming ayahs'}
               onClick={() => setShowPending(p => !p)}
             >
               {showPending ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
@@ -376,7 +384,7 @@ export default function Index() {
 
       {/* ── Status bar ── */}
       {isListening && (
-        <div className={`px-4 py-1 text-center text-xs font-sans border-b ${
+        <div className={`px-4 py-1 text-center text-xs font-sans border-b shrink-0 ${
           mode === 'azure'
             ? 'bg-emerald-950/40 border-emerald-800/30 text-emerald-400'
             : 'bg-yellow-950/30 border-yellow-800/30 text-yellow-500'
@@ -387,60 +395,84 @@ export default function Index() {
         </div>
       )}
 
-      {/* ── Main content ── */}
-      <main className="flex-1 flex flex-col items-center px-4 py-6 gap-5 max-w-5xl mx-auto w-full">
+      {/* ── CONTROLS SECTION — ALWAYS ABOVE FOLD ── */}
+      <div className="shrink-0 px-4 py-4 border-b border-border/30">
+        <div className="max-w-5xl mx-auto flex flex-col items-center gap-3">
 
-        {loading ? (
-          <div className="flex-1 flex items-center justify-center py-24">
-            <div className="w-10 h-10 border-2 border-primary border-t-transparent rounded-full animate-spin" />
-          </div>
-        ) : (
-          <QuranDisplay
-            words={words}
-            currentIndex={currentIndex}
-            wordStatuses={wordStatuses}
-            showPending={showPending}
-            surahName={currentSurah?.name}
-            surahEnglishName={currentSurah?.englishName}
-            surahNumber={selectedSurah}
+          {/* Mic status indicator */}
+          <MicStatus isListening={isListening} />
+
+          {/* Main recitation controls (mic button, progress, reset) */}
+          <RecitationControls
+            isRecording={isListening}
+            isConnected={isConnected}
+            onStart={handleStart}
+            onStop={handleStop}
+            onReset={handleReset}
+            progress={progress}
+            totalWords={words.length}
+            completedWords={completedWords}
+            hasWords={words.length > 0}
           />
-        )}
 
-        <RecitationControls
-          isRecording={isListening}
-          isConnected={isConnected}
-          onStart={handleStart}
-          onStop={handleStop}
-          onReset={handleReset}
-          progress={progress}
-          totalWords={words.length}
-          completedWords={completedWords}
-          hasWords={words.length > 0}
-        />
+          {/* Auth prompt for non-logged-in users */}
+          {!user && words.length > 0 && (
+            <p className="text-xs text-muted-foreground/60 font-sans text-center">
+              <button
+                onClick={() => navigate('/auth')}
+                className="text-gold hover:underline"
+              >
+                Sign in
+              </button>
+              {' '}to start reciting and save your progress
+            </p>
+          )}
 
-        {/* Feedback row */}
-        <div className="flex flex-col items-center gap-1 min-h-10">
-          {lastHeard && (
-            <div className="text-center">
-              <p className="text-[10px] text-muted-foreground/40 font-sans uppercase tracking-wider">Heard</p>
-              <p className="font-quran text-xl text-gold-dim" dir="rtl">{lastHeard}</p>
-            </div>
-          )}
-          {phoneticInfo && (
-            <p className="text-xs text-muted-foreground/60 font-sans">{phoneticInfo}</p>
-          )}
-          {!audioHelp && (
-            <p className="text-xs text-muted-foreground/30 font-sans">
-              🔇 Audio help is off
+          {/* Feedback row */}
+          <div className="flex flex-col items-center gap-1 min-h-6">
+            {lastHeard && (
+              <div className="text-center">
+                <p className="text-[10px] text-muted-foreground/40 font-sans uppercase tracking-wider">Heard</p>
+                <p className="font-quran text-xl text-gold-dim" dir="rtl">{lastHeard}</p>
+              </div>
+            )}
+            {phoneticInfo && (
+              <p className="text-xs text-muted-foreground/60 font-sans">{phoneticInfo}</p>
+            )}
+            {!audioHelp && (
+              <p className="text-xs text-muted-foreground/30 font-sans">
+                🔇 Audio help is off
+              </p>
+            )}
+          </div>
+
+          {speechError && (
+            <p className="text-xs text-red-400 text-center max-w-sm bg-red-950/20 rounded-lg px-3 py-2">
+              {speechError}
             </p>
           )}
         </div>
+      </div>
 
-        {speechError && (
-          <p className="text-xs text-red-400 text-center max-w-sm bg-red-950/20 rounded-lg px-3 py-2">
-            {speechError}
-          </p>
-        )}
+      {/* ── QURAN DISPLAY — SCROLLABLE AREA BELOW CONTROLS ── */}
+      <main className="flex-1 overflow-y-auto px-4 py-4">
+        <div className="max-w-5xl mx-auto">
+          {loading ? (
+            <div className="flex items-center justify-center py-16">
+              <div className="w-10 h-10 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+            </div>
+          ) : (
+            <QuranDisplay
+              words={words}
+              currentIndex={currentIndex}
+              wordStatuses={wordStatuses}
+              showPending={showPending}
+              surahName={currentSurah?.name}
+              surahEnglishName={currentSurah?.englishName}
+              surahNumber={selectedSurah}
+            />
+          )}
+        </div>
       </main>
     </div>
   );

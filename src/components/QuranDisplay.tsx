@@ -1,45 +1,46 @@
-import { useEffect, useRef, useState } from 'react';
-import type { QuranWord } from '@/lib/quranApi';
-import { getWordTajweedInfo, TAJWEED_RULES, type TajweedInfo } from '@/lib/tajweedUtils';
+/**
+ * QuranDisplay.tsx
+ *
+ * Renders the Quran text in a Mushaf-style layout with tajweed colouring.
+ *
+ * HIDE AYAHS FIX:
+ * When showPending=false, ayahs ahead of the current position are:
+ * - Completely hidden (no text rendered at all, no blur, no placeholders)
+ * - Only the ayah number marker ﴿N﴾ is shown
+ */
+
+import { useRef, useState, useEffect } from 'react';
 import { cn } from '@/lib/utils';
+import { type QuranWord } from '@/lib/quranApi';
+import { getWordTajweedInfo, type TajweedInfo, TAJWEED_RULES } from '@/lib/tajweedUtils';
 import { Info, X } from 'lucide-react';
 
-interface WordStatus {
-  state: 'pending' | 'current' | 'correct' | 'incorrect';
-  retries: number;
-}
-
-interface QuranDisplayProps {
-  words: QuranWord[];
-  currentIndex: number;
-  wordStatuses: Map<number, WordStatus>;
-  showPending: boolean;
-  surahName?: string;
-  surahEnglishName?: string;
-  surahNumber?: number;
-}
-
-// Tajweed colours for dark and light mode
-const TAJWEED_COLORS: Record<string, { dark: string; light: string }> = {
-  'tajweed-ghunna':   { dark: '#e74c3c', light: '#c0392b' },
-  'tajweed-qalqalah': { dark: '#2ecc71', light: '#1e8449' },
-  'tajweed-madd':     { dark: '#3498db', light: '#1a6fba' },
-  'tajweed-ikhfa':    { dark: '#e67e22', light: '#d35400' },
-  'tajweed-idgham':   { dark: '#1abc9c', light: '#16a085' },
-  'tajweed-iqlab':    { dark: '#9b59b6', light: '#7d3c98' },
-};
+// ── Dark mode hook ────────────────────────────────────────────────────────────
 
 function useDarkMode() {
-  const [dark, setDark] = useState(() => !document.documentElement.classList.contains('light'));
+  const [isDark, setIsDark] = useState(
+    () => document.documentElement.classList.contains('dark'),
+  );
   useEffect(() => {
     const obs = new MutationObserver(() =>
-      setDark(!document.documentElement.classList.contains('light'))
+      setIsDark(document.documentElement.classList.contains('dark')),
     );
     obs.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
     return () => obs.disconnect();
   }, []);
-  return dark;
+  return isDark;
 }
+
+// ── Tajweed colour map ────────────────────────────────────────────────────────
+
+const TAJWEED_COLORS: Record<string, { light: string; dark: string }> = {
+  'tajweed-ghunna':   { light: '#c0392b', dark: '#e74c3c' },
+  'tajweed-qalqalah': { light: '#27ae60', dark: '#2ecc71' },
+  'tajweed-madd':     { light: '#2471a3', dark: '#5dade2' },
+  'tajweed-ikhfa':    { light: '#d35400', dark: '#e67e22' },
+  'tajweed-idgham':   { light: '#148f77', dark: '#1abc9c' },
+  'tajweed-iqlab':    { light: '#7d3c98', dark: '#a569bd' },
+};
 
 function getTC(cls: string, isDark: boolean): string {
   return isDark ? (TAJWEED_COLORS[cls]?.dark ?? 'inherit') : (TAJWEED_COLORS[cls]?.light ?? 'inherit');
@@ -83,6 +84,23 @@ function TajweedLegend({ onClose, isDark }: { onClose: () => void; isDark: boole
   );
 }
 
+// ── Types ─────────────────────────────────────────────────────────────────────
+
+interface WordStatus {
+  state: 'pending' | 'current' | 'correct' | 'incorrect';
+  retries: number;
+}
+
+interface QuranDisplayProps {
+  words: QuranWord[];
+  currentIndex: number;
+  wordStatuses: Map<number, WordStatus>;
+  showPending: boolean;
+  surahName?: string;
+  surahEnglishName?: string;
+  surahNumber?: number;
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
 
 export function QuranDisplay({
@@ -106,7 +124,7 @@ export function QuranDisplay({
 
   if (words.length === 0) {
     return (
-      <div className="flex flex-col items-center justify-center py-24 gap-4">
+      <div className="flex flex-col items-center justify-center py-16 gap-4">
         <div className="font-quran text-5xl opacity-20" style={{ color: isDark ? 'hsl(45 70% 55%)' : 'hsl(45 65% 38%)' }}>
           بسم الله
         </div>
@@ -213,7 +231,7 @@ export function QuranDisplay({
         {/* Text scroll area */}
         <div
           className="relative z-10 overflow-y-auto px-8 md:px-14 py-8"
-          style={{ maxHeight: '55vh' }}
+          style={{ maxHeight: '45vh' }}
           dir="rtl"
         >
           {startAyahIdx > 0 && (
@@ -225,6 +243,9 @@ export function QuranDisplay({
           {/*
             Mushaf layout: all words flow inline, just like a real Quran page.
             Each ayah is an inline <span>, words wrap naturally across lines.
+            
+            HIDE AYAHS: When showPending=false, future ayahs render ONLY the
+            ayah number — no text, no blur, no placeholders.
           */}
           <p
             className="text-right font-quran"
@@ -240,13 +261,27 @@ export function QuranDisplay({
               const isFullyPending = ayahWords.every(
                 w => (wordStatuses.get(w.globalIndex)?.state ?? 'pending') === 'pending'
               );
-              const shouldBlur = isAheadOfCurrent && isFullyPending && !showPending;
+              
+              // HIDE AYAHS FIX: When showPending=false and ayah is ahead+pending,
+              // completely hide all Arabic text — only show ayah number
+              const shouldHide = isAheadOfCurrent && isFullyPending && !showPending;
+
+              if (shouldHide) {
+                // Render ONLY the ayah number marker — no text at all
+                return (
+                  <span key={ayahNum} className="inline">
+                    <span
+                      className="inline-block mx-2 font-quran"
+                      style={{ color: goldColor, fontSize: '0.75em', opacity: 0.5 }}
+                    >
+                      ﴿{ayahNum}﴾
+                    </span>
+                  </span>
+                );
+              }
 
               return (
-                <span
-                  key={ayahNum}
-                  className={cn('transition-all duration-300', shouldBlur && 'blur-sm select-none pointer-events-none')}
-                >
+                <span key={ayahNum}>
                   {ayahWords.map((word, wi) => {
                     const isCurrent = word.globalIndex === currentIndex;
                     const status = wordStatuses.get(word.globalIndex);
@@ -336,13 +371,13 @@ export function QuranDisplay({
             key={info.rule}
             className={cn(
               'flex items-center gap-1.5 text-xs font-sans transition-opacity duration-150',
-              hoveredRule && hoveredRule !== info.color ? 'opacity-25' : 'opacity-100',
+              hoveredRule && hoveredRule !== info.color ? 'opacity-30' : 'opacity-100',
             )}
-            onMouseEnter={() => { setHoveredRule(info.color); setHoveredInfo(info); }}
-            onMouseLeave={() => { setHoveredRule(null); setHoveredInfo(null); }}
+            onMouseEnter={() => (setHoveredRule(info.color), setHoveredInfo(info))}
+            onMouseLeave={() => (setHoveredRule(null), setHoveredInfo(null))}
           >
-            <span
-              className="w-2 h-2 rounded-full inline-block shrink-0"
+            <div
+              className="w-2 h-2 rounded-full"
               style={{ background: getTC(info.color, isDark) }}
             />
             <span style={{ color: getTC(info.color, isDark) }}>{info.label}</span>

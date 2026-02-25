@@ -2,20 +2,22 @@
  * useAzureSpeech.ts
  *
  * Streams raw PCM16 mic audio to the backend WebSocket.
- * Sends a JSON config frame first, then binary audio chunks.
- * Returns TranscriptionResult objects that include phonetic accuracy scores
- * from Azure Pronunciation Assessment.
+ * Sends a JSON config frame first (with auth token), then binary audio chunks.
+ * Returns TranscriptionResult objects.
+ *
+ * SECURITY: Sends Supabase JWT token in the config handshake.
+ * Backend validates token before allowing audio processing.
  *
  * Falls back to browser Web Speech API automatically if VITE_WS_URL is not set.
  */
 
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { unlockAudio } from '@/lib/audioPlayer';
+import { supabase } from '@/integrations/supabase/client';
 
 const WS_URL = import.meta.env.VITE_WS_URL as string | undefined;
 
 // ── AudioWorklet (PCM Float32→Int16 conversion) ───────────────────────────────
-// Inlined as a Blob URL so no extra build artefact is needed.
 const WORKLET_CODE = `
 class PcmProcessor extends AudioWorkletProcessor {
   process(inputs) {
@@ -38,7 +40,7 @@ registerProcessor('pcm-processor', PcmProcessor);
 export type SpeechMode = 'azure' | 'browser';
 
 export interface PhoneticScore {
-  accuracyScore:      number;  // 0–100
+  accuracyScore:      number;
   fluencyScore:       number;
   completenessScore:  number;
   pronunciationScore: number;
@@ -48,7 +50,7 @@ export interface WordResult {
   word:          string;
   confidence:    number;
   accuracyScore?: number;
-  errorType?:    string; // 'None' | 'Omission' | 'Insertion' | 'Mispronunciation'
+  errorType?:    string;
 }
 
 export interface TranscriptionResult {
@@ -59,7 +61,7 @@ export interface TranscriptionResult {
 }
 
 interface StartOptions {
-  refText?: string;  // current expected word — sent to backend for Pronunciation Assessment
+  refText?: string;
 }
 
 interface UseAzureSpeechReturn {
@@ -69,7 +71,6 @@ interface UseAzureSpeechReturn {
   error:        string | null;
   start: (onResult: (r: TranscriptionResult) => void, opts?: StartOptions) => void;
   stop:  () => void;
-  /** Update the pronunciation-assessment reference text mid-session */
   updateRefText: (text: string) => void;
 }
 
@@ -115,6 +116,14 @@ export function useAzureSpeech(): UseAzureSpeechReturn {
 
   useEffect(() => () => { cleanup(); }, [cleanup]);
 
+  // ── Update ref text mid-session ──────────────────────────────────────────
+
+  const updateRefText = useCallback((text: string) => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'updateRefText', refText: text }));
+    }
+  }, []);
+
   // ── Azure path ────────────────────────────────────────────────────────────
 
   const startAzure = useCallback(async (
@@ -124,6 +133,14 @@ export function useAzureSpeech(): UseAzureSpeechReturn {
     setError(null);
     onResultRef.current = onResult;
     unlockAudio();
+
+    // Get current auth token
+    const { data: sessionData } = await supabase.auth.getSession();
+    const token = sessionData?.session?.access_token;
+    if (!token) {
+      setError('Authentication required. Please sign in first.');
+      return;
+    }
 
     // Open WebSocket
     const ws = new WebSocket(WS_URL!);
@@ -139,7 +156,19 @@ export function useAzureSpeech(): UseAzureSpeechReturn {
       try {
         const msg = JSON.parse(ev.data as string);
         if (msg.type === 'ready') { setIsConnected(true); return; }
-        if (msg.type === 'error') { setError(msg.message); return; }
+        if (msg.type === 'error') {
+          if (msg.code === 'AUTH_REQUIRED') {
+            setError('Authentication failed. Please sign in again.');
+            cleanup();
+            return;
+          }
+          if (msg.code === 'RATE_LIMITED') {
+            setError('Too many requests. Please slow down.');
+            return;
+          }
+          setError(msg.message);
+          return;
+        }
         if (msg.type === 'interim' || msg.type === 'final') {
           onResultRef.current?.({
             text:     msg.text ?? '',
@@ -153,32 +182,53 @@ export function useAzureSpeech(): UseAzureSpeechReturn {
       }
     };
 
-    ws.onclose = () => setIsConnected(false);
+    ws.onclose = (e) => {
+      setIsConnected(false);
+      if (e.code === 4003) {
+        setError('Authentication required. Please sign in.');
+      } else if (e.code === 4001) {
+        setError('Connection timeout. Please try again.');
+      }
+    };
 
-    // Wait for connection (5 s timeout)
+    // Wait for connection (5s timeout)
     await new Promise<void>((res, rej) => {
       const t = setTimeout(() => rej(new Error('WebSocket timeout')), 5000);
       ws.addEventListener('open',  () => { clearTimeout(t); res(); },  { once: true });
       ws.addEventListener('error', () => { clearTimeout(t); rej(new Error('WS error')); }, { once: true });
     });
 
-    // ① Send config handshake (MUST arrive before audio)
+    // ① Send config handshake with auth token (MUST arrive before audio)
     ws.send(JSON.stringify({
       type:    'config',
       locale:  'ar-SA',
       refText: opts.refText ?? null,
+      token:   token,  // SECURITY: Send JWT for backend validation
     }));
 
     // ② Open microphone at 16 kHz mono
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        channelCount:    1,
-        sampleRate:      16000,
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true,
-      },
-    });
+    let stream: MediaStream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount:    1,
+          sampleRate:      16000,
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+      });
+    } catch (err: any) {
+      if (err.name === 'NotAllowedError') {
+        setError('Microphone permission denied. Please allow microphone access in your browser settings.');
+      } else if (err.name === 'NotFoundError') {
+        setError('No microphone found. Please connect a microphone and try again.');
+      } else {
+        setError(`Microphone error: ${err.message}`);
+      }
+      cleanup();
+      return;
+    }
     streamRef.current = stream;
 
     // ③ AudioWorklet → raw PCM16 → WebSocket
@@ -200,8 +250,8 @@ export function useAzureSpeech(): UseAzureSpeechReturn {
     };
 
     source.connect(worklet);
-    // Do NOT connect worklet → destination (avoids echo)
     setIsListening(true);
+    console.log('[useAzureSpeech] Started Azure streaming');
   }, [cleanup]);
 
   // ── Browser Web Speech API fallback ──────────────────────────────────────
@@ -220,82 +270,72 @@ export function useAzureSpeech(): UseAzureSpeechReturn {
       (window as any).webkitSpeechRecognition;
 
     if (!SR) {
-      setError('Speech recognition not supported. Use Chrome or Edge, or set VITE_WS_URL for Azure.');
+      setError('Speech recognition not supported in this browser. Try Chrome or Edge.');
       return;
     }
 
-    const rec = new SR();
-    rec.lang = 'ar-SA';
-    rec.continuous = true;
-    rec.interimResults = true;
-    rec.maxAlternatives = 5;
+    const recognition = new SR();
+    recogRef.current = recognition;
+    recognition.lang = 'ar-SA';
+    recognition.continuous = true;
+    recognition.interimResults = true;
 
-    rec.onresult = (ev: any) => {
-      for (let i = ev.resultIndex; i < ev.results.length; i++) {
-        const r   = ev.results[i];
-        const txt = r[0]?.transcript?.trim();
-        if (!txt) continue;
-        onResultRef.current?.({
-          text:    txt,
-          isFinal: r.isFinal,
-          words:   Array.from({ length: r.length }, (_: unknown, j: number) => ({
-            word:       r[j]?.transcript?.trim() ?? '',
-            confidence: r[j]?.confidence        ?? 1,
-          })),
-        });
+    recognition.onresult = (event: any) => {
+      const last = event.results[event.results.length - 1];
+      const text = last[0]?.transcript?.trim() ?? '';
+      onResultRef.current?.({
+        text,
+        isFinal: last.isFinal,
+      });
+    };
+
+    recognition.onerror = (event: any) => {
+      if (event.error === 'not-allowed') {
+        setError('Microphone permission denied. Please allow microphone access.');
+      } else if (event.error !== 'no-speech' && event.error !== 'aborted') {
+        console.warn('[useAzureSpeech] Browser speech error:', event.error);
       }
     };
 
-    rec.onerror = (e: any) => {
-      if (['no-speech', 'audio-capture', 'network'].includes(e.error) && shouldRestartRef.current) {
-        setTimeout(() => { try { rec.start(); } catch {} }, 300);
-      }
-    };
-
-    rec.onend = () => {
+    recognition.onend = () => {
       if (shouldRestartRef.current) {
-        setTimeout(() => { try { rec.start(); } catch {} }, 100);
+        try { recognition.start(); } catch {}
       } else {
         setIsListening(false);
-        setIsConnected(false);
       }
     };
 
-    recogRef.current = rec;
     try {
-      rec.start();
+      recognition.start();
       setIsListening(true);
-      setIsConnected(true);
-    } catch {
+      console.log('[useAzureSpeech] Started browser speech recognition');
+    } catch (err) {
       setError('Failed to start speech recognition.');
+      console.error('[useAzureSpeech] Start error:', err);
     }
   }, []);
 
-  // ── Public API ────────────────────────────────────────────────────────────
+  // ── Public API ──────────────────────────────────────────────────────────
 
   const start = useCallback((
     onResult: (r: TranscriptionResult) => void,
     opts: StartOptions = {},
   ) => {
-    if (mode === 'azure') {
+    if (WS_URL) {
       startAzure(onResult, opts).catch(err => {
-        console.warn('Azure failed, falling back to browser:', err);
-        setError(null);
+        console.error('[useAzureSpeech] Azure start error:', err);
+        setError('Failed to connect. Falling back to browser speech.');
         startBrowser(onResult, opts);
       });
     } else {
       startBrowser(onResult, opts);
     }
-  }, [mode, startAzure, startBrowser]);
+  }, [startAzure, startBrowser]);
 
-  const stop = useCallback(() => cleanup(), [cleanup]);
-
-  /** Send updated reference text to backend for next Pronunciation Assessment utterance */
-  const updateRefText = useCallback((text: string) => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type: 'refText', text }));
-    }
-  }, []);
+  const stop = useCallback(() => {
+    cleanup();
+    console.log('[useAzureSpeech] Stopped');
+  }, [cleanup]);
 
   return { isListening, isConnected, mode, error, start, stop, updateRefText };
 }
