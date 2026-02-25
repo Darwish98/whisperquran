@@ -40,7 +40,7 @@ const Auth = () => {
           password,
           options: {
             data: { full_name: displayName },
-            emailRedirectTo: window.location.origin,
+            emailRedirectTo: 'http://localhost:5173',
           },
         });
         if (error) throw error;
@@ -56,7 +56,7 @@ const Auth = () => {
   const handleGoogleLogin = async () => {
     const { error } = await supabase.auth.signInWithOAuth({
       provider: 'google',
-      options: { redirectTo: window.location.origin },
+      options: { redirectTo: 'http://localhost:5173' },
     });
     if (error) {
       toast({ title: 'Error', description: error.message, variant: 'destructive' });

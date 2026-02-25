@@ -44,13 +44,6 @@ function MicStatusBadge({
           Requesting microphone…
         </span>
       );
-    case 'granted':
-      return (
-        <span className="flex items-center gap-1.5 text-xs text-emerald-400 font-sans">
-          <CheckCircle2 className="w-3.5 h-3.5" />
-          Microphone ready
-        </span>
-      );
     case 'denied':
       return (
         <span className="flex items-center gap-1.5 text-xs text-red-400 font-sans">
@@ -81,32 +74,6 @@ export function RecitationControls({
 }: RecitationControlsProps) {
   return (
     <div className="w-full max-w-sm mx-auto">
-
-      {/* Progress bar */}
-      {hasWords && totalWords > 0 && (
-        <div className="mb-5">
-          <div className="flex justify-between mb-1.5">
-            <span className="text-xs text-muted-foreground/50 font-sans">Progress</span>
-            <span className="text-xs font-sans text-muted-foreground">
-              <span className="text-gold">{completedWords}</span>
-              <span className="opacity-40 mx-1">/</span>
-              {totalWords}
-            </span>
-          </div>
-          <div className="h-1 w-full rounded-full bg-border/30 overflow-hidden">
-            <div
-              className="h-full rounded-full transition-all duration-500"
-              style={{
-                width: `${Math.min(100, progress)}%`,
-                background: 'linear-gradient(to right, #059669, hsl(45 70% 55%))',
-              }}
-            />
-          </div>
-          {progress >= 100 && (
-            <p className="text-center text-xs text-emerald-400 mt-1.5">ماشاء الله — Surah Complete! 🎉</p>
-          )}
-        </div>
-      )}
 
       {/* Buttons */}
       <div className="flex items-center justify-center gap-6">
@@ -177,6 +144,32 @@ export function RecitationControls({
           isAuthenticated={isAuthenticated}
         />
       </div>
+
+      {/* Progress bar — below the buttons */}
+      {hasWords && totalWords > 0 && (
+        <div className="mt-5">
+          <div className="flex justify-between mb-1.5">
+            <span className="text-xs text-muted-foreground/50 font-sans">Progress</span>
+            <span className="text-xs font-sans text-muted-foreground">
+              <span className="text-gold">{completedWords}</span>
+              <span className="opacity-40 mx-1">/</span>
+              {totalWords}
+            </span>
+          </div>
+          <div className="h-1 w-full rounded-full bg-border/30 overflow-hidden">
+            <div
+              className="h-full rounded-full transition-all duration-500"
+              style={{
+                width: `${Math.min(100, progress)}%`,
+                background: 'linear-gradient(to right, #059669, hsl(45 70% 55%))',
+              }}
+            />
+          </div>
+          {progress >= 100 && (
+            <p className="text-center text-xs text-emerald-400 mt-1.5">ماشاء الله — Surah Complete! 🎉</p>
+          )}
+        </div>
+      )}
     </div>
   );
 }

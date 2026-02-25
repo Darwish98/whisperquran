@@ -11,6 +11,9 @@ import { QuranDisplay } from '@/components/QuranDisplay';
 import { RecitationControls } from '@/components/RecitationControls';
 import { MicStatus } from '@/components/MicStatus';
 import { useAzureSpeech, type TranscriptionResult } from '@/hooks/useAzureSpeech';
+
+// MicPermission mirrors the type expected by RecitationControls
+type MicPermission = 'idle' | 'requesting' | 'granted' | 'denied' | 'error';
 import { useAuth } from '@/hooks/useAuth';
 import { useUserProgress } from '@/hooks/useUserProgress';
 import { useToast } from '@/hooks/use-toast';
@@ -20,7 +23,8 @@ import {
   Select, SelectContent, SelectItem,
   SelectTrigger, SelectValue,
 } from '@/components/ui/select';
-import { LogIn, LogOut, Sun, Moon, Eye, EyeOff, Volume2, VolumeX } from 'lucide-react';
+import { LogIn, LogOut, Sun, Moon, Eye, EyeOff, Volume2, VolumeX, Mic, MicOff, RotateCcw } from 'lucide-react';
+import { cn } from '@/lib/utils';
 
 interface WordStatus {
   state: 'pending' | 'current' | 'correct' | 'incorrect';
@@ -49,6 +53,7 @@ export default function Index() {
   const [showPending,    setShowPending]    = useState(true);
   const [audioHelp,      setAudioHelp]      = useState(true);
   const [reciter,        setReciter]        = useState<Reciter>(DEFAULT_RECITER);
+  const [micPermission,  setMicPermission]  = useState<MicPermission>('idle');
 
   const currentIndexRef    = useRef(0);
   const wordsRef           = useRef<QuranWord[]>([]);
@@ -57,6 +62,11 @@ export default function Index() {
   const reciterRef         = useRef<Reciter>(DEFAULT_RECITER);
 
   useEffect(() => { reciterRef.current = reciter; }, [reciter]);
+
+  // Apply dark/light mode to document
+  useEffect(() => {
+    document.documentElement.classList.toggle('dark', isDark);
+  }, [isDark]);
 
   const { isListening, isConnected, start, stop, updateRefText, mode, error: speechError } =
     useAzureSpeech();
@@ -118,7 +128,6 @@ export default function Index() {
 
     setLastHeard(result.text);
 
-    // Show phonetic info if available
     if (result.phonetic) {
       const p = result.phonetic;
       setPhoneticInfo(
@@ -132,7 +141,6 @@ export default function Index() {
 
     wordsAttemptedRef.current++;
 
-    // Try to match recognized text against current and nearby words
     const matchResult = matchConsecutiveWords(
       result.text,
       w.slice(idx, idx + 5).map(x => x.text),
@@ -142,7 +150,6 @@ export default function Index() {
       const next = new Map(prev);
 
       if (matchResult.matched > 0) {
-        // Mark matched words as correct
         for (let i = 0; i < matchResult.matched; i++) {
           next.set(idx + i, { state: 'correct', retries: 0 });
         }
@@ -151,18 +158,15 @@ export default function Index() {
         currentIndexRef.current = newIndex;
         setCurrentIndex(newIndex);
 
-        // Update ref text for pronunciation assessment
         if (newIndex < w.length) {
           next.set(newIndex, { state: 'current', retries: 0 });
           updateRefText(w[newIndex].text);
         }
 
-        // Preload audio for upcoming ayahs
         const nextAyahs = [...new Set(w.slice(newIndex, newIndex + 20).map(x => x.ayahNumber))];
         const urls = nextAyahs.map(ay => getAyahAudioUrl(selectedSurahRef.current, ay, reciterRef.current.id));
         preloadWordAudio(urls);
 
-        // Check surah completion
         if (newIndex >= w.length) {
           stop();
           toast({ title: 'ماشاء الله', description: 'Surah complete!' });
@@ -172,12 +176,10 @@ export default function Index() {
           }
         }
       } else {
-        // Wrong word
         const cur        = next.get(idx) ?? { state: 'current' as const, retries: 0 };
         const newRetries = cur.retries + 1;
         next.set(idx, { state: 'incorrect', retries: newRetries });
 
-        // 3-strikes audio help — only if the toggle is ON
         if (newRetries >= MAX_RETRIES_BEFORE_HELP && audioHelp) {
           const url = getAyahAudioUrl(
             selectedSurahRef.current,
@@ -199,7 +201,6 @@ export default function Index() {
           });
         }
 
-        // Reset word back to 'current' after the red flash
         setTimeout(() => {
           setWordStatuses(p => {
             const n = new Map(p);
@@ -230,17 +231,19 @@ export default function Index() {
     }
 
     // CRITICAL: unlockAudio must be called synchronously inside a click handler
-    // This satisfies browser autoplay policy for ALL future playAudio() calls
     unlockAudio();
 
+    setMicPermission('requesting');
     sessionStartRef.current  = Date.now();
     wordsAttemptedRef.current = 0;
     const currentWord = wordsRef.current[currentIndexRef.current];
     start(handleTranscription, { refText: currentWord?.text });
+    setMicPermission('granted');
   }, [words, user, start, handleTranscription, toast, navigate]);
 
   const handleStop = useCallback(() => {
     stop();
+    setMicPermission('idle');
     if (user && sessionStartRef.current > 0) {
       const dur = Math.floor((Date.now() - sessionStartRef.current) / 1000);
       saveRecitationHistory(selectedSurah, dur, wordsAttemptedRef.current, completedWords);
@@ -250,6 +253,7 @@ export default function Index() {
 
   const handleReset = useCallback(() => {
     stop();
+    setMicPermission('idle');
     setLastHeard('');
     setPhoneticInfo(null);
     if (words.length) {
@@ -395,66 +399,8 @@ export default function Index() {
         </div>
       )}
 
-      {/* ── CONTROLS SECTION — ALWAYS ABOVE FOLD ── */}
-      <div className="shrink-0 px-4 py-4 border-b border-border/30">
-        <div className="max-w-5xl mx-auto flex flex-col items-center gap-3">
 
-          {/* Mic status indicator */}
-          <MicStatus isListening={isListening} />
-
-          {/* Main recitation controls (mic button, progress, reset) */}
-          <RecitationControls
-            isRecording={isListening}
-            isConnected={isConnected}
-            onStart={handleStart}
-            onStop={handleStop}
-            onReset={handleReset}
-            progress={progress}
-            totalWords={words.length}
-            completedWords={completedWords}
-            hasWords={words.length > 0}
-          />
-
-          {/* Auth prompt for non-logged-in users */}
-          {!user && words.length > 0 && (
-            <p className="text-xs text-muted-foreground/60 font-sans text-center">
-              <button
-                onClick={() => navigate('/auth')}
-                className="text-gold hover:underline"
-              >
-                Sign in
-              </button>
-              {' '}to start reciting and save your progress
-            </p>
-          )}
-
-          {/* Feedback row */}
-          <div className="flex flex-col items-center gap-1 min-h-6">
-            {lastHeard && (
-              <div className="text-center">
-                <p className="text-[10px] text-muted-foreground/40 font-sans uppercase tracking-wider">Heard</p>
-                <p className="font-quran text-xl text-gold-dim" dir="rtl">{lastHeard}</p>
-              </div>
-            )}
-            {phoneticInfo && (
-              <p className="text-xs text-muted-foreground/60 font-sans">{phoneticInfo}</p>
-            )}
-            {!audioHelp && (
-              <p className="text-xs text-muted-foreground/30 font-sans">
-                🔇 Audio help is off
-              </p>
-            )}
-          </div>
-
-          {speechError && (
-            <p className="text-xs text-red-400 text-center max-w-sm bg-red-950/20 rounded-lg px-3 py-2">
-              {speechError}
-            </p>
-          )}
-        </div>
-      </div>
-
-      {/* ── QURAN DISPLAY — SCROLLABLE AREA BELOW CONTROLS ── */}
+      {/* ── Quran display ── */}
       <main className="flex-1 overflow-y-auto px-4 py-4">
         <div className="max-w-5xl mx-auto">
           {loading ? (
@@ -474,6 +420,41 @@ export default function Index() {
           )}
         </div>
       </main>
+
+      {/* ── Controls — below the Quran, inside the scroll flow ── */}
+      <div className="shrink-0 px-4 py-6 border-t border-border/30">
+        <div className="max-w-5xl mx-auto flex flex-col items-center gap-3">
+          <RecitationControls
+            isRecording={isListening}
+            isConnected={isConnected}
+            isAuthenticated={!!user}
+            micPermission={micPermission}
+            onStart={handleStart}
+            onStop={handleStop}
+            onReset={handleReset}
+            onLogin={() => navigate('/auth')}
+            progress={progress}
+            totalWords={words.length}
+            completedWords={completedWords}
+            hasWords={words.length > 0}
+          />
+          {lastHeard && (
+            <div className="text-center">
+              <p className="text-[10px] text-muted-foreground/40 font-sans uppercase tracking-wider">Heard</p>
+              <p className="font-quran text-xl text-gold-dim" dir="rtl">{lastHeard}</p>
+            </div>
+          )}
+          {phoneticInfo && (
+            <p className="text-xs text-muted-foreground/60 font-sans">{phoneticInfo}</p>
+          )}
+          {!audioHelp && (
+            <p className="text-xs text-muted-foreground/30 font-sans">🔇 Audio help off</p>
+          )}
+          {speechError && (
+            <p className="text-xs text-red-400 text-center max-w-sm bg-red-950/20 rounded-lg px-3 py-2">{speechError}</p>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
