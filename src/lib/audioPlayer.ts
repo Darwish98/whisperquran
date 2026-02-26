@@ -1,70 +1,63 @@
 /**
- * audioPlayer.ts — Simple HTMLAudioElement-based player
+ * audioPlayer.ts
  *
- * Uses HTMLAudioElement instead of AudioContext — avoids all autoplay/unlock issues.
- * Browsers allow HTMLAudio playback triggered from any async context as long as
- * the user has interacted with the page at least once (which mic permission grants).
+ * Uses a single persistent Audio element created at module load.
+ * unlockAudio() must be called from a synchronous user gesture once —
+ * after that the element stays unlocked for the session.
  */
 
-const cache = new Map<string, string>(); // url → blob URL
-const preloadCache = new Map<string, Promise<string>>();
+const player = new Audio();
+player.preload = 'none';
 
-export type AudioStatus = 'unlocked';
+const SILENT_WAV = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=';
 
-export function getAudioStatus(): AudioStatus {
-  return 'unlocked';
-}
+const cache = new Map<string, string>();
+const inflight = new Map<string, Promise<string>>();
 
-/** No-op — HTMLAudio doesn't need unlocking */
-export function unlockAudio(): void {}
+export type AudioStatus = 'locked' | 'unlocked';
+export function getAudioStatus(): AudioStatus { return 'unlocked'; }
+export function isAudioUnlocked(): boolean { return true; }
 
-/** Check if audio is ready (always true for HTMLAudio) */
-export function isAudioUnlocked(): boolean {
-  return true;
-}
-
-async function fetchAsBlobUrl(url: string): Promise<string> {
-  if (cache.has(url)) return cache.get(url)!;
-
-  // Deduplicate concurrent fetches for same URL
-  if (!preloadCache.has(url)) {
-    const p = fetch(url)
-      .then(r => {
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        return r.blob();
-      })
-      .then(blob => {
-        const blobUrl = URL.createObjectURL(blob);
-        cache.set(url, blobUrl);
-        return blobUrl;
-      });
-    preloadCache.set(url, p);
-  }
-
-  return preloadCache.get(url)!;
+/**
+ * Call synchronously from ANY user gesture (button click, tap).
+ * Primes the persistent Audio element so .play() works in async contexts.
+ */
+export function unlockAudio(): void {
+  player.src = SILENT_WAV;
+  player.volume = 0;
+  player.play().then(() => {
+    player.volume = 1;
+  }).catch(() => {});
 }
 
 /**
- * Play a URL immediately using HTMLAudioElement.
- * Returns true on success, false on failure.
+ * Play audio. Fetches and caches as blob URL on first call.
  */
 export async function playAudio(url: string): Promise<boolean> {
   try {
-    const blobUrl = await fetchAsBlobUrl(url);
-    const audio = new Audio(blobUrl);
-    audio.volume = 1.0;
-    await audio.play();
-    console.log(`[audioPlayer] ▶️ Playing: ${url.split('/').pop()}`);
+    const blobUrl = await getBlobUrl(url);
+    player.pause();
+    player.src = blobUrl;
+    player.volume = 1;
+    await player.play();
     return true;
   } catch (err) {
-    console.warn('[audioPlayer] playAudio failed:', err);
+    console.warn('[audio] play failed:', err);
     return false;
   }
 }
 
-/** Background-preload URLs into blob cache. Fire-and-forget. */
 export function preloadWordAudio(urls: string[]): void {
-  for (const url of urls) {
-    fetchAsBlobUrl(url).catch(() => {});
+  urls.forEach(url => getBlobUrl(url).catch(() => {}));
+}
+
+async function getBlobUrl(url: string): Promise<string> {
+  if (cache.has(url)) return cache.get(url)!;
+  if (!inflight.has(url)) {
+    inflight.set(url, fetch(url)
+      .then(r => { if (!r.ok) throw new Error(`${r.status}`); return r.blob(); })
+      .then(b => { const u = URL.createObjectURL(b); cache.set(url, u); return u; })
+    );
   }
+  return inflight.get(url)!;
 }

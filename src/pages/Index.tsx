@@ -54,6 +54,7 @@ export default function Index() {
   const [audioHelp,      setAudioHelp]      = useState(true);
   const [reciter,        setReciter]        = useState<Reciter>(DEFAULT_RECITER);
   const [micPermission,  setMicPermission]  = useState<MicPermission>('idle');
+  const [audioReady,     setAudioReady]     = useState(false);
 
   const currentIndexRef    = useRef(0);
   const wordsRef           = useRef<QuranWord[]>([]);
@@ -189,15 +190,7 @@ export default function Index() {
             w[idx].ayahNumber,
             reciterRef.current.id,
           );
-          playAudio(url).then(success => {
-            if (!success) {
-              toast({
-                title: '🔇 Audio blocked',
-                description: 'Click anywhere to enable audio, then try again.',
-                variant: 'destructive',
-              });
-            }
-          });
+          playAudio(url);
           toast({
             title: `🔊 ${reciterRef.current.nameAr}`,
             description: 'Listen and repeat',
@@ -271,8 +264,29 @@ export default function Index() {
   }, [stop, words]);
 
   // ── Render ────────────────────────────────────────────────────────────────
+
+  // Show audio unlock screen on first visit
+  if (!audioReady) {
+    return (
+      <div
+        className="min-h-[100dvh] bg-background flex flex-col items-center justify-center gap-6 cursor-pointer"
+        onClick={() => { unlockAudio(); setAudioReady(true); }}
+      >
+        <h1 className="font-quran text-4xl text-gold glow-gold">تلاوة</h1>
+        <p className="text-muted-foreground text-sm">Quran Recitation</p>
+        <button
+          className="px-8 py-4 rounded-2xl bg-gold text-background font-semibold text-lg shadow-lg hover:opacity-90 transition-opacity"
+          onClick={() => { unlockAudio(); setAudioReady(true); }}
+        >
+          ▶ Tap to Begin
+        </button>
+        <p className="text-xs text-muted-foreground opacity-60">Enables microphone & audio playback</p>
+      </div>
+    );
+  }
+
   return (
-    <div className="min-h-[100dvh] bg-background flex flex-col transition-colors duration-300">
+    <div className="min-h-[100dvh] bg-background flex flex-col transition-colors duration-300" onClick={unlockAudio}>
 
       {/* ── Sticky header ── */}
       <header className="border-b border-border/50 px-4 py-3 sticky top-0 z-40 bg-background/90 backdrop-blur-sm shrink-0">
