@@ -17,6 +17,7 @@ type MicPermission = 'idle' | 'requesting' | 'granted' | 'denied' | 'error';
 import { useAuth } from '@/hooks/useAuth';
 import { useUserProgress } from '@/hooks/useUserProgress';
 import { useToast } from '@/hooks/use-toast';
+import { ToastAction } from '@/components/ui/toast';
 import { useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import {
@@ -108,8 +109,8 @@ export default function Index() {
       setWordStatuses(statuses);
 
       // Preload audio for first few ayahs
-      const firstAyahs = [...new Set(w.slice(0, 30).map(word => word.ayahNumber))];
-      const urls = firstAyahs.map(ay => getAyahAudioUrl(num, ay, reciterRef.current.id));
+      const firstGlobalAyahs = [...new Set(w.slice(0, 30).map(word => word.globalAyahNumber))];
+      const urls = firstGlobalAyahs.map(g => getAyahAudioUrl(g, reciterRef.current.id));
       preloadWordAudio(urls);
     } catch (err) {
       console.error('Failed to load surah:', err);
@@ -167,8 +168,8 @@ export default function Index() {
           updateRefText(w[newIndex].text);
         }
 
-        const nextAyahs = [...new Set(w.slice(newIndex, newIndex + 20).map(x => x.ayahNumber))];
-        const urls = nextAyahs.map(ay => getAyahAudioUrl(selectedSurahRef.current, ay, reciterRef.current.id));
+        const nextGlobalAyahs = [...new Set(w.slice(newIndex, newIndex + 20).map(x => x.globalAyahNumber))];
+        const urls = nextGlobalAyahs.map(g => getAyahAudioUrl(g, reciterRef.current.id));
         preloadWordAudio(urls);
 
         if (newIndex >= w.length) {
@@ -186,14 +187,20 @@ export default function Index() {
 
         if (newRetries >= MAX_RETRIES_BEFORE_HELP && audioHelp) {
           const url = getAyahAudioUrl(
-            selectedSurahRef.current,
-            w[idx].ayahNumber,
+            w[idx].globalAyahNumber,
             reciterRef.current.id,
           );
-          playAudio(url);
           toast({
             title: `🔊 ${reciterRef.current.nameAr}`,
-            description: 'Listen and repeat',
+            description: 'Tap ▶ to hear this ayah',
+            action: (
+              <ToastAction altText="Play recitation" onClick={() => {
+                const audio = new Audio(url);
+                audio.play().catch(console.warn);
+              }}>
+                ▶ Play
+              </ToastAction>
+            ),
           });
         }
 
