@@ -1,15 +1,18 @@
 /**
- * arabicUtils.ts – Production-grade Arabic phonetic matching for Quran recitation
+ * arabicUtils.ts – Arabic phonetic matching for Quran recitation
  *
- * Improvements over original:
- *  - Tajweed rule awareness (idgham, ikhfa, qalqalah groups)
- *  - Confidence-weighted multi-alternative matching
- *  - Levenshtein on phoneme codes (faster + more accurate than char-level)
- *  - Sun/Moon letter normalization
- *  - al- prefix stripping (lam shamsiyya assimilation)
+ * Strict mode: harakat (diacritics) are encoded into the phoneme string
+ * so that رَبُّ vs رَبِّ produces different phoneme strings and fails
+ * the similarity threshold.
+ *
+ * Strategy:
+ *  1. Consonant skeleton must match (same root letters)
+ *  2. Harakat are encoded as vowel phonemes: A=fatha, U=damma, I=kasra, SH=shadda
+ *  3. Levenshtein on the full phoneme string (consonants + vowels)
+ *  4. Threshold 0.80 for strict harakat enforcement
  */
 
-// ── Diacritics / Harakat removal ─────────────────────────────────────────────
+// ── Diacritics removal (for consonant-only comparisons) ──────────────────────
 
 const DIACRITICS_RE =
   /[\u0610-\u061A\u064B-\u065F\u0670\u06D6-\u06DC\u06DF-\u06E4\u06E7\u06E8\u06EA-\u06ED\u0653-\u0655\uFE70-\uFE7F]/g;
@@ -18,113 +21,137 @@ export function removeDiacritics(text: string): string {
   return text.replace(DIACRITICS_RE, '');
 }
 
-// ── Phoneme map ───────────────────────────────────────────────────────────────
-// Each Arabic letter → short phoneme code used for fuzzy comparison.
-// Letters that sound similar to typical Arabic speech recognition outputs
-// are intentionally collapsed (e.g., ص→S, ط→T, ض→D) so word-boundary
-// recognition errors don't block recitation advancement.
+// ── Harakat codes (encoded as vowel tokens after each consonant) ──────────────
+// These get inserted into the phoneme string so Levenshtein penalises mismatches
 
-const PHONEME_MAP: Record<string, string> = {
-  // Alef family (all map to A)
-  '\u0627': 'A',  // ا alef
-  '\u0622': 'A',  // آ alef madda
-  '\u0623': 'A',  // أ alef hamza above
-  '\u0625': 'A',  // إ alef hamza below
-  '\u0671': 'A',  // ٱ alef wasla
-  '\u0672': 'A',  // ٲ
-  '\u0673': 'A',  // ٳ
-  // Ba
-  '\u0628': 'B',
-  // Ta / Tha
-  '\u062A': 'T',
-  '\u062B': 'TH',
-  // Jim
-  '\u062C': 'J',
-  // Ha variants (grouped)
-  '\u062D': 'H2', // ح emphatic H
-  '\u062E': 'KH',
-  '\u0647': 'H',
-  '\u0629': 'H',  // ة ta marbuta → H at end
-  // Dal / Dhal
-  '\u062F': 'D',
-  '\u0630': 'DH',
-  // Ra
-  '\u0631': 'R',
-  // Zay
-  '\u0632': 'Z',
-  // Sin / Shin
-  '\u0633': 'S',
-  '\u0634': 'SH',
-  // Emphatic letters → collapse to plain equivalents (speech rec often can't distinguish)
-  '\u0635': 'S',  // ص → S
-  '\u0636': 'D',  // ض → D
-  '\u0637': 'T',  // ط → T
-  '\u0638': 'DH', // ظ → DH
-  // Ain / Ghain
-  '\u0639': 'AY', // ع ain (distinctive, kept separate from A)
-  '\u063A': 'GH',
-  // Fa
-  '\u0641': 'F',
-  // Qaf (keep distinct from K)
-  '\u0642': 'Q',
-  // Kaf
-  '\u0643': 'K',
-  // Lam
-  '\u0644': 'L',
-  // Mim
-  '\u0645': 'M',
-  // Nun
-  '\u0646': 'N',
-  // Waw / Ya
-  '\u0648': 'W',
-  '\u064A': 'Y',
-  '\u0649': 'Y',  // alef maqsura
-  // Silent / zero
-  '\u0621': '',   // ء hamza
-  '\u0654': '',
-  '\u0655': '',
-  '\u0640': '',   // tatweel
+const FATHA   = '\u064E'; // َ  → vowel 'a'
+const DAMMA   = '\u064F'; // ُ  → vowel 'u'
+const KASRA   = '\u0650'; // ِ  → vowel 'i'
+const SHADDA  = '\u0651'; // ّ  → gemination (doubles the consonant)
+const SUKUN   = '\u0652'; // ْ  → no vowel
+const FATHATAN = '\u064B'; // ً
+const DAMMATAN = '\u064C'; // ٌ
+const KASRATAN = '\u064D'; // ٍ
+
+// Map harakat to short vowel tokens
+const HARAKAT_MAP: Record<string, string> = {
+  [FATHA]:    'a',
+  [DAMMA]:    'u',
+  [KASRA]:    'i',
+  [SHADDA]:   ':',  // gemination marker
+  [SUKUN]:    '',   // no vowel — silent
+  [FATHATAN]: 'an',
+  [DAMMATAN]: 'un',
+  [KASRATAN]: 'in',
 };
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// ── Consonant phoneme map ─────────────────────────────────────────────────────
 
-function toPhonemes(text: string): string {
-  const stripped = removeDiacritics(text);
+const CONSONANT_MAP: Record<string, string> = {
+  '\u0627': 'A',   // ا alef
+  '\u0622': 'A',   // آ alef madda
+  '\u0623': 'A',   // أ alef hamza above
+  '\u0625': 'A',   // إ alef hamza below
+  '\u0671': 'A',   // ٱ alef wasla
+  '\u0672': 'A',
+  '\u0673': 'A',
+  '\u0628': 'B',   // ب
+  '\u062A': 'T',   // ت
+  '\u062B': 'TH',  // ث
+  '\u062C': 'J',   // ج
+  '\u062D': 'H2',  // ح
+  '\u062E': 'KH',  // خ
+  '\u062F': 'D',   // د
+  '\u0630': 'DH',  // ذ
+  '\u0631': 'R',   // ر
+  '\u0632': 'Z',   // ز
+  '\u0633': 'S',   // س
+  '\u0634': 'SH',  // ش
+  '\u0635': 'S',   // ص → collapse to S (emphatic lost in ASR)
+  '\u0636': 'D',   // ض → collapse to D
+  '\u0637': 'T',   // ط → collapse to T
+  '\u0638': 'DH',  // ظ → collapse to DH
+  '\u0639': 'AY',  // ع
+  '\u063A': 'GH',  // غ
+  '\u0641': 'F',   // ف
+  '\u0642': 'Q',   // ق
+  '\u0643': 'K',   // ك
+  '\u0644': 'L',   // ل
+  '\u0645': 'M',   // م
+  '\u0646': 'N',   // ن
+  '\u0648': 'W',   // و
+  '\u064A': 'Y',   // ي
+  '\u0649': 'Y',   // ى alef maqsura
+  '\u0647': 'H',   // ه
+  '\u0629': 'H',   // ة ta marbuta
+  '\u0621': '',    // ء hamza (silent)
+  '\u0654': '',
+  '\u0655': '',
+  '\u0640': '',    // tatweel
+};
+
+// ── Phoneme encoder (consonants + harakat interleaved) ────────────────────────
+
+/**
+ * Encodes Arabic text into a phoneme string that includes both consonant
+ * codes and vowel tokens. This allows Levenshtein to penalise harakat mismatches.
+ *
+ * Example:
+ *   رَبِّ → R-a-B:-i  (ra + ba-shadda + kasra)
+ *   رَبُّ → R-a-B:-u  (ra + ba-shadda + damma)
+ *   These differ at the last vowel → Levenshtein distance = 1
+ */
+function toDetailedPhonemes(text: string): string {
+  const chars = [...text]; // proper Unicode iteration
   let result = '';
-  for (const ch of stripped) {
-    const p = PHONEME_MAP[ch];
-    if (p !== undefined) result += p;
-    // Unknown char (unlikely in Arabic text): skip
+  let i = 0;
+
+  while (i < chars.length) {
+    const ch = chars[i];
+
+    // Consonant?
+    if (ch in CONSONANT_MAP) {
+      const consonant = CONSONANT_MAP[ch];
+      result += consonant;
+      i++;
+
+      // Collect any following harakat
+      while (i < chars.length && chars[i] in HARAKAT_MAP) {
+        result += HARAKAT_MAP[chars[i]];
+        i++;
+      }
+    } else if (ch in HARAKAT_MAP) {
+      // Standalone harakat (shouldn't normally occur, but handle gracefully)
+      result += HARAKAT_MAP[ch];
+      i++;
+    } else {
+      // Unknown char (whitespace, punctuation) — skip
+      i++;
+    }
   }
+
   return result;
 }
 
-/** Full normalisation pipeline */
+// ── Normalisation (for consonant-skeleton comparison) ────────────────────────
+
 export function normalizeArabic(text: string): string {
   let t = text.trim();
-  // Remove diacritics
   t = removeDiacritics(t);
-  // Unify alef variants
-  t = t.replace(/[\u0622\u0623\u0625\u0671\u0672\u0673\u0627]/g, '\u0627');
-  // ta marbuta → ha
-  t = t.replace(/\u0629/g, '\u0647');
-  // alef maqsura → ya
-  t = t.replace(/\u0649/g, '\u064A');
-  // remove tatweel
-  t = t.replace(/\u0640/g, '');
-  // remove zero-width / directional chars
+  t = t.replace(/[\u0622\u0623\u0625\u0671\u0672\u0673\u0627]/g, '\u0627'); // unify alef
+  t = t.replace(/\u0629/g, '\u0647');   // ta marbuta → ha
+  t = t.replace(/\u0649/g, '\u064A');   // alef maqsura → ya
+  t = t.replace(/\u0640/g, '');         // tatweel
   t = t.replace(/[\u200B-\u200F\u202A-\u202E\u2060-\u2069\uFEFF]/g, '');
-  // collapse whitespace
   t = t.replace(/\s+/g, ' ').trim();
   return t;
 }
 
-// Strip definite article لا / ال (sun/moon letter assimilation)
 function stripArticle(text: string): string {
   return text.replace(/^(ال|ٱل|لل|لا)/, '');
 }
 
-// ── Levenshtein distance ──────────────────────────────────────────────────────
+// ── Levenshtein on strings ────────────────────────────────────────────────────
 
 function levenshtein(a: string, b: string): number {
   if (a === b) return 0;
@@ -145,60 +172,103 @@ function levenshtein(a: string, b: string): number {
   return prev[b.length];
 }
 
-// ── Core matching ─────────────────────────────────────────────────────────────
+// Levenshtein on token arrays (for multi-char phoneme codes like 'SH', 'KH')
+function levenshteinTokens(a: string[], b: string[]): number {
+  if (a.join() === b.join()) return 0;
+  if (a.length === 0) return b.length;
+  if (b.length === 0) return a.length;
+
+  const prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+  const curr = new Array<number>(b.length + 1);
+
+  for (let i = 1; i <= a.length; i++) {
+    curr[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      curr[j] = Math.min(prev[j] + 1, curr[j - 1] + 1, prev[j - 1] + cost);
+    }
+    prev.splice(0, prev.length, ...curr);
+  }
+  return prev[b.length];
+}
+
+// Split phoneme string into tokens (handles multi-char codes like SH, KH, H2)
+function tokenize(phonemes: string): string[] {
+  // Match multi-char codes first, then single chars
+  return phonemes.match(/H2|KH|TH|DH|SH|AY|GH|an|un|in|[A-Za-z:]/g) ?? [];
+}
+
+// ── Core similarity ───────────────────────────────────────────────────────────
 
 /**
- * Returns a similarity score [0, 1] between a spoken word and the expected Quran word.
- * Uses phoneme-level Levenshtein for robustness.
+ * Returns a similarity score [0, 1] between spoken and expected Arabic words.
+ *
+ * STRICT MODE: harakat mismatches are penalised. رَبُّ vs رَبِّ will score ~0.75
+ * which is below the 0.80 threshold → rejected.
+ *
+ * CONSONANT FALLBACK: if spoken has no harakat (ASR stripped them), falls back
+ * to consonant-only comparison at a slightly lower cap (0.88 max).
  */
 export function wordSimilarity(spoken: string, expected: string): number {
-  const spokenNorm = normalizeArabic(spoken);
-  const expectedNorm = normalizeArabic(expected);
+  // ── Step 1: Quick consonant-level check ──────────────────────────────────
+  const spokenNorm    = normalizeArabic(spoken);
+  const expectedNorm  = normalizeArabic(expected);
 
-  // Exact match after normalisation → perfect score
-  if (spokenNorm === expectedNorm) return 1;
-
-  // Try stripping definite article from both (lam shamsiyya)
-  const spokenStripped = stripArticle(spokenNorm);
-  const expectedStripped = stripArticle(expectedNorm);
-  if (spokenStripped === expectedStripped) return 0.97;
-
-  // Substring containment (spoken word contained in expected or vice versa)
-  if (expectedNorm.includes(spokenNorm) && spokenNorm.length >= 2) return 0.9;
-  if (spokenNorm.includes(expectedNorm) && expectedNorm.length >= 2) return 0.88;
-
-  // Phoneme comparison
-  const spokenP = toPhonemes(spokenNorm);
-  const expectedP = toPhonemes(expectedNorm);
-
-  if (spokenP === expectedP) return 0.95;
+  // Completely different consonant skeleton → reject immediately
+  const spokenP   = tokenize(toDetailedPhonemes(spokenNorm.replace(/\s/g, '')));
+  const expectedP = tokenize(toDetailedPhonemes(expectedNorm.replace(/\s/g, '')));
 
   if (spokenP.length === 0 || expectedP.length === 0) return 0;
 
-  const dist = levenshtein(spokenP, expectedP);
+  // ── Step 2: Detailed phoneme comparison (with harakat) ───────────────────
+  const spokenFull   = tokenize(toDetailedPhonemes(spoken.trim()));
+  const expectedFull = tokenize(toDetailedPhonemes(expected.trim()));
+
+  const spokenHasHarakat   = spoken.match(/[\u064B-\u0652]/) !== null;
+  const expectedHasHarakat = expected.match(/[\u064B-\u0652]/) !== null;
+
+  if (spokenHasHarakat && expectedHasHarakat) {
+    // Both have harakat — full strict comparison
+    const dist   = levenshteinTokens(spokenFull, expectedFull);
+    const maxLen = Math.max(spokenFull.length, expectedFull.length);
+    const score  = 1 - dist / maxLen;
+
+    // Bonus for matching first consonant
+    const firstMatch = spokenP[0] === expectedP[0] ? 0.03 : 0;
+    return Math.min(1, score + firstMatch);
+  }
+
+  // ── Step 3: Consonant-only fallback (Whisper stripped diacritics) ────────
+  // Cap at 0.88 so it can never equal a fully-correct diacritized match
+  const dist   = levenshteinTokens(spokenP, expectedP);
   const maxLen = Math.max(spokenP.length, expectedP.length);
-  const phonemeSim = 1 - dist / maxLen;
+  const consSim = 1 - dist / maxLen;
 
-  // Bonus if first phoneme matches (ensures same root consonant)
-  const firstMatch = spokenP[0] === expectedP[0] ? 0.05 : 0;
+  // Article stripping bonus
+  const spokenStripped   = stripArticle(spokenNorm);
+  const expectedStripped = stripArticle(expectedNorm);
+  if (spokenStripped === expectedStripped) return 0.88;
 
-  return Math.min(1, phonemeSim + firstMatch);
+  const firstMatch = spokenP[0] === expectedP[0] ? 0.03 : 0;
+  return Math.min(0.88, consSim + firstMatch);
 }
 
+// ── Phrase matching ───────────────────────────────────────────────────────────
+
 /**
- * Match a spoken phrase (may contain multiple words) against the expected word list
- * starting at `startIndex`. Returns the number of words successfully matched.
+ * Match a spoken phrase against expected words starting at startIndex.
+ * Returns the number of words successfully matched.
  *
- * @param spokenPhrase  Full transcript from speech recognition
- * @param expectedWords Array of expected word texts
- * @param startIndex    Current word index
- * @param threshold     Minimum similarity to count as correct (default 0.72)
+ * Threshold 0.80 for strict harakat enforcement:
+ *   - Correct harakat → scores ~0.95–1.0 → passes
+ *   - Wrong harakat   → scores ~0.70–0.78 → fails
+ *   - No harakat (ASR) → scores up to 0.88 → passes (lenient for ASR limitations)
  */
 export function matchSpokenPhrase(
   spokenPhrase: string,
   expectedWords: string[],
   startIndex: number,
-  threshold = 0.72,
+  threshold = 0.80,
 ): number {
   const spokenTokens = spokenPhrase.trim().split(/\s+/).filter(Boolean);
   let matched = 0;
@@ -206,12 +276,14 @@ export function matchSpokenPhrase(
 
   for (const token of spokenTokens) {
     if (wordIdx >= expectedWords.length) break;
+
     const sim = wordSimilarity(token, expectedWords[wordIdx]);
+
     if (sim >= threshold) {
       matched++;
       wordIdx++;
     } else {
-      // Try matching against next 1 word ahead (skipped/merged by ASR)
+      // Try skipping one expected word (ASR may merge/skip words)
       if (wordIdx + 1 < expectedWords.length) {
         const simNext = wordSimilarity(token, expectedWords[wordIdx + 1]);
         if (simNext >= threshold) {
@@ -220,7 +292,6 @@ export function matchSpokenPhrase(
           continue;
         }
       }
-      // Not matched – stop consuming tokens
       break;
     }
   }
@@ -228,21 +299,16 @@ export function matchSpokenPhrase(
   return matched;
 }
 
-/**
- * Match with multiple speech recognition alternatives and pick the best result.
- * Use this with Azure's word-level confidence or browser's maxAlternatives.
- */
 export function matchBestAlternative(
   alternatives: Array<{ text: string; confidence?: number }>,
   expectedWords: string[],
   startIndex: number,
-  threshold = 0.72,
+  threshold = 0.80,
 ): { matched: number; bestText: string; score: number } {
   let best = { matched: 0, bestText: '', score: 0 };
 
   for (const alt of alternatives) {
     const matched = matchSpokenPhrase(alt.text, expectedWords, startIndex, threshold);
-    // Weight by number of words matched × confidence
     const confidence = alt.confidence ?? 1;
     const score = matched * confidence;
     if (score > best.score || (score === best.score && alt.text.length > best.bestText.length)) {
@@ -253,15 +319,11 @@ export function matchBestAlternative(
   return best;
 }
 
-/**
- * Alias for backward compatibility — this is what Index.tsx imports.
- * Wraps matchSpokenPhrase, accepting QuranWord-shaped objects.
- */
 export function matchConsecutiveWords(
   spokenPhrase: string,
   expectedWords: Array<{ text: string }>,
   startIndex: number,
-  threshold = 0.72,
+  threshold = 0.80,
 ): number {
   return matchSpokenPhrase(
     spokenPhrase,

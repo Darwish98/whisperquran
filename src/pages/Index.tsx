@@ -68,6 +68,8 @@ export default function Index() {
     document.documentElement.classList.toggle('dark', isDark);
   }, [isDark]);
 
+
+
   const { isListening, isConnected, start, stop, updateRefText, mode, error: speechError } =
     useAzureSpeech();
   const { user, signOut }                       = useAuth();
@@ -121,6 +123,11 @@ export default function Index() {
 
   // ── Transcription handler ─────────────────────────────────────────────────
   const handleTranscription = useCallback((result: TranscriptionResult) => {
+    if (!result.isFinal) {
+      setLastHeard(result.text);
+      return;
+    }
+
     setLastHeard(result.text);
 
     if (result.phonetic) {
@@ -134,27 +141,23 @@ export default function Index() {
     const idx = currentIndexRef.current;
     if (!w.length || idx >= w.length) return;
 
-    // Match against up to 10 words ahead — Whisper often returns multiple words at once
-    const matchResult = matchConsecutiveWords(
-      result.text,
-      w.slice(idx, idx + 10).map(x => x.text),
-    );
+    wordsAttemptedRef.current++;
 
-    // For interim results, only advance if we got a confident match (2+ words)
-    // For final results, advance on any match
-    if (!result.isFinal && matchResult.matched < 2) return;
+    // Sanity check — ignore very short transcriptions (noise/hallucinations)
+    if (result.text.trim().length < 3) return;
 
-    if (result.isFinal) wordsAttemptedRef.current++;
+    const expectedSlice = w.slice(idx, idx + 10);
+    const matched = matchConsecutiveWords(result.text, expectedSlice, 0, 0.80);
 
     setWordStatuses(prev => {
       const next = new Map(prev);
 
-      if (matchResult.matched > 0) {
-        for (let i = 0; i < matchResult.matched; i++) {
+      if (matched > 0) {
+        for (let i = 0; i < matched; i++) {
           next.set(idx + i, { state: 'correct', retries: 0 });
         }
 
-        const newIndex = idx + matchResult.matched;
+        const newIndex = idx + matched;
         currentIndexRef.current = newIndex;
         setCurrentIndex(newIndex);
 
