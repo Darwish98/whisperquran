@@ -5,6 +5,9 @@
  * Sends a JSON config frame first (with auth token), then binary audio chunks.
  * Returns TranscriptionResult objects.
  *
+ * TAJWEED INTEGRATION: Added onAudioChunk callback so audio can be captured
+ * for tajweed analysis alongside transcription.
+ *
  * SECURITY: Sends Supabase JWT token in the config handshake.
  * Backend validates token before allowing audio processing.
  *
@@ -68,6 +71,7 @@ export interface TranscriptionResult {
 
 interface StartOptions {
   refText?: string;
+  onAudioChunk?: (chunk: ArrayBuffer) => void; // ← NEW: tajweed audio capture
 }
 
 interface UseAzureSpeechReturn {
@@ -96,6 +100,7 @@ export function useAzureSpeech(): UseAzureSpeechReturn {
   const streamRef = useRef<MediaStream | null>(null);
   const workletBlobRef = useRef<string | null>(null);
   const onResultRef = useRef<((r: TranscriptionResult) => void) | null>(null);
+  const onAudioChunkRef = useRef<((chunk: ArrayBuffer) => void) | null>(null); // ← NEW
 
   // Browser fallback refs
   const recogRef = useRef<any>(null);
@@ -120,6 +125,8 @@ export function useAzureSpeech(): UseAzureSpeechReturn {
       recogRef.current?.stop();
     } catch {}
     recogRef.current = null;
+
+    onAudioChunkRef.current = null; // ← NEW
 
     setIsListening(false);
     setIsConnected(false);
@@ -151,6 +158,7 @@ export function useAzureSpeech(): UseAzureSpeechReturn {
     ) => {
       setError(null);
       onResultRef.current = onResult;
+      onAudioChunkRef.current = opts.onAudioChunk ?? null; // ← NEW
       unlockAudio();
 
       // Get current auth token
@@ -275,7 +283,7 @@ export function useAzureSpeech(): UseAzureSpeechReturn {
       }
       streamRef.current = stream;
 
-      // ③ AudioWorklet → raw PCM16 → WebSocket
+      // ③ AudioWorklet → raw PCM16 → WebSocket + tajweed buffer
       if (!workletBlobRef.current) {
         const blob = new Blob([WORKLET_CODE], {
           type: "application/javascript",
@@ -293,6 +301,8 @@ export function useAzureSpeech(): UseAzureSpeechReturn {
 
       worklet.port.onmessage = (e: MessageEvent<ArrayBuffer>) => {
         if (ws.readyState === WebSocket.OPEN) ws.send(e.data);
+        // ← NEW: Also forward chunk for tajweed analysis buffering
+        onAudioChunkRef.current?.(e.data);
       };
 
       source.connect(worklet);

@@ -3,6 +3,13 @@
  *
  * Renders the Quran text in a Mushaf-style layout with tajweed colouring.
  *
+ * TAJWEED ACOUSTIC INTEGRATION:
+ * When tajweedStatuses prop is provided (from useTajweedAnalysis),
+ * words that are 'correct' get an additional badge:
+ *   ✅ green dot  = tajweed correct
+ *   🟡 amber dot  = tajweed violation (tap for details)
+ * Words with tajweed violations show in amber instead of green.
+ *
  * HIDE AYAHS FIX:
  * When showPending=false, ayahs ahead of the current position are:
  * - Completely hidden (no text rendered at all, no blur, no placeholders)
@@ -14,6 +21,8 @@ import { cn } from '@/lib/utils';
 import { type QuranWord } from '@/lib/quranApi';
 import { getWordTajweedInfo, type TajweedInfo, TAJWEED_RULES } from '@/lib/tajweedUtils';
 import { Info, X } from 'lucide-react';
+import { TajweedBadge } from '@/components/TajweedIndicator';
+import type { WordTajweedStatus } from '@/hooks/useTajweedAnalysis';
 
 // ── Dark mode hook ────────────────────────────────────────────────────────────
 
@@ -99,6 +108,7 @@ interface QuranDisplayProps {
   surahName?: string;
   surahEnglishName?: string;
   surahNumber?: number;
+  tajweedStatuses?: Map<number, WordTajweedStatus>;   // ← NEW
 }
 
 // ── Main component ────────────────────────────────────────────────────────────
@@ -111,6 +121,7 @@ export function QuranDisplay({
   surahName,
   surahEnglishName,
   surahNumber,
+  tajweedStatuses,                                     // ← NEW
 }: QuranDisplayProps) {
   const currentWordRef = useRef<HTMLSpanElement>(null);
   const [showLegend, setShowLegend] = useState(false);
@@ -160,7 +171,6 @@ export function QuranDisplay({
 
       {/* ── Header row ── */}
       <div className="flex items-center justify-between px-1">
-        {/* Surah title */}
         <div className="flex items-center gap-3" dir="rtl">
           {surahName && (
             <span className="font-quran text-2xl" style={{ color: goldColor }}>
@@ -175,7 +185,6 @@ export function QuranDisplay({
           )}
         </div>
 
-        {/* Legend button */}
         <div className="relative shrink-0" dir="ltr">
           <button
             onClick={() => setShowLegend(s => !s)}
@@ -184,9 +193,7 @@ export function QuranDisplay({
             <Info className="w-3.5 h-3.5" />
             Tajweed Guide
           </button>
-          {showLegend && (
-            <TajweedLegend onClose={() => setShowLegend(false)} isDark={isDark} />
-          )}
+          {showLegend && <TajweedLegend onClose={() => setShowLegend(false)} isDark={isDark} />}
         </div>
       </div>
 
@@ -194,13 +201,8 @@ export function QuranDisplay({
       <div className={cn('transition-all duration-200 overflow-hidden', hoveredInfo ? 'max-h-16 opacity-100' : 'max-h-0 opacity-0')}>
         {hoveredInfo && (
           <div className="mx-1 flex items-center gap-3 bg-card border border-border/50 rounded-lg px-4 py-2" dir="ltr">
-            <div
-              className="w-2.5 h-2.5 rounded-full shrink-0"
-              style={{ background: getTC(hoveredInfo.color, isDark) }}
-            />
-            <span className="text-sm font-semibold shrink-0" style={{ color: getTC(hoveredInfo.color, isDark) }}>
-              {hoveredInfo.label}
-            </span>
+            <div className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: getTC(hoveredInfo.color, isDark) }} />
+            <span className="text-sm font-semibold shrink-0" style={{ color: getTC(hoveredInfo.color, isDark) }}>{hoveredInfo.label}</span>
             <span className="font-quran text-base text-muted-foreground shrink-0">{hoveredInfo.arabic}</span>
             <span className="text-xs text-muted-foreground truncate">{hoveredInfo.description}</span>
           </div>
@@ -208,52 +210,25 @@ export function QuranDisplay({
       </div>
 
       {/* ── Mushaf page ── */}
-      <div
-        className="relative rounded-2xl overflow-hidden shadow-2xl"
-        style={{ background: pageBackground, border: `1px solid ${borderGold}` }}
-      >
-        {/* Inner decorative border */}
-        <div
-          className="absolute inset-3 rounded-xl pointer-events-none z-0"
-          style={{ border: `1px solid ${borderGold}` }}
-        />
+      <div className="relative rounded-2xl overflow-hidden shadow-2xl" style={{ background: pageBackground, border: `1px solid ${borderGold}` }}>
+        <div className="absolute inset-3 rounded-xl pointer-events-none z-0" style={{ border: `1px solid ${borderGold}` }} />
 
-        {/* Bismillah header — shown on all surahs except Fatiha (already in text) and Tawbah */}
         {surahNumber && surahNumber !== 1 && surahNumber !== 9 && (
-          <div
-            className="relative z-10 text-center pt-6 pb-4 font-quran text-2xl md:text-3xl"
-            style={{ color: goldColor, borderBottom: `1px solid ${borderGold}` }}
-          >
+          <div className="relative z-10 text-center pt-6 pb-4 font-quran text-2xl md:text-3xl" style={{ color: goldColor, borderBottom: `1px solid ${borderGold}` }}>
             بِسْمِ ٱللَّهِ ٱلرَّحْمَٰنِ ٱلرَّحِيمِ
           </div>
         )}
 
-        {/* Text scroll area */}
-        <div
-          className="relative z-10 overflow-y-auto px-8 md:px-14 py-8"
-          style={{ maxHeight: '45vh' }}
-          dir="rtl"
-        >
+        <div className="relative z-10 overflow-y-auto px-8 md:px-14 py-8" style={{ maxHeight: '45vh' }} dir="rtl">
           {startAyahIdx > 0 && (
             <p className="text-center text-muted-foreground/30 text-xs font-sans mb-6" dir="ltr">
               ↑ {startAyahIdx} earlier {startAyahIdx === 1 ? 'ayah' : 'ayahs'}
             </p>
           )}
 
-          {/*
-            Mushaf layout: all words flow inline, just like a real Quran page.
-            Each ayah is an inline <span>, words wrap naturally across lines.
-            
-            HIDE AYAHS: When showPending=false, future ayahs render ONLY the
-            ayah number — no text, no blur, no placeholders.
-          */}
           <p
             className="text-right font-quran"
-            style={{
-              fontSize: 'clamp(1.4rem, 3.5vw, 2.2rem)',
-              lineHeight: '3.2',
-              color: isDark ? 'hsl(44 20% 80%)' : 'hsl(30 20% 20%)',
-            }}
+            style={{ fontSize: 'clamp(1.4rem, 3.5vw, 2.2rem)', lineHeight: '3.2', color: isDark ? 'hsl(44 20% 80%)' : 'hsl(30 20% 20%)' }}
           >
             {visibleAyahs.map((ayahNum) => {
               const ayahWords = ayahs.get(ayahNum)!;
@@ -261,19 +236,12 @@ export function QuranDisplay({
               const isFullyPending = ayahWords.every(
                 w => (wordStatuses.get(w.globalIndex)?.state ?? 'pending') === 'pending'
               );
-              
-              // HIDE AYAHS FIX: When showPending=false and ayah is ahead+pending,
-              // completely hide all Arabic text — only show ayah number
               const shouldHide = isAheadOfCurrent && isFullyPending && !showPending;
 
               if (shouldHide) {
-                // Render ONLY the ayah number marker — no text at all
                 return (
                   <span key={ayahNum} className="inline">
-                    <span
-                      className="inline-block mx-2 font-quran"
-                      style={{ color: goldColor, fontSize: '0.75em', opacity: 0.5 }}
-                    >
+                    <span className="inline-block mx-2 font-quran" style={{ color: goldColor, fontSize: '0.75em', opacity: 0.5 }}>
                       ﴿{ayahNum}﴾
                     </span>
                   </span>
@@ -288,7 +256,6 @@ export function QuranDisplay({
                     const state = status?.state ?? 'pending';
                     const retries = status?.retries ?? 0;
 
-                    // Next word for tajweed context
                     const nextWord = wi < ayahWords.length - 1
                       ? ayahWords[wi + 1]
                       : ayahs.get(ayahNum + 1)?.[0];
@@ -296,12 +263,19 @@ export function QuranDisplay({
                     const tajweed = getWordTajweedInfo(word.text, nextWord?.text);
                     const isHoverDimmed = hoveredRule && tajweed?.color !== hoveredRule;
 
-                    // Resolve text colour
+                    // ── Resolve text colour (UPDATED: amber for tajweed violations) ──
+                    const tajweedAcoustic = tajweedStatuses?.get(word.globalIndex);
                     let wordColor: string | undefined;
+
                     if (state === 'current') {
-                      wordColor = undefined; // className handles it
+                      wordColor = undefined;
                     } else if (state === 'correct') {
-                      wordColor = isDark ? '#2ecc71' : '#1e8449';
+                      if (tajweedAcoustic?.has_violation) {
+                        // 🟡 Amber: word correct but tajweed violation
+                        wordColor = isDark ? '#f39c12' : '#e67e22';
+                      } else {
+                        wordColor = isDark ? '#2ecc71' : '#1e8449';
+                      }
                     } else if (state === 'incorrect') {
                       wordColor = isDark ? '#e74c3c' : '#c0392b';
                     } else if (tajweed) {
@@ -324,6 +298,11 @@ export function QuranDisplay({
                       >
                         {word.text}
 
+                        {/* Tajweed acoustic badge (NEW) */}
+                        {state === 'correct' && tajweedAcoustic && (
+                          <TajweedBadge status={tajweedAcoustic} isDark={isDark} />
+                        )}
+
                         {/* Retry counter */}
                         {isCurrent && retries > 0 && (
                           <sup
@@ -337,11 +316,7 @@ export function QuranDisplay({
                     );
                   })}
 
-                  {/* Ayah end marker */}
-                  <span
-                    className="inline-block mx-1 font-quran"
-                    style={{ color: goldColor, fontSize: '0.75em' }}
-                  >
+                  <span className="inline-block mx-1 font-quran" style={{ color: goldColor, fontSize: '0.75em' }}>
                     ﴿{ayahNum}﴾
                   </span>
                 </span>
@@ -356,11 +331,7 @@ export function QuranDisplay({
           )}
         </div>
 
-        {/* Bottom ornament */}
-        <div
-          className="relative z-10 h-px mx-10 mb-4"
-          style={{ background: `linear-gradient(to right, transparent, ${borderGold}, transparent)` }}
-        />
+        <div className="relative z-10 h-px mx-10 mb-4" style={{ background: `linear-gradient(to right, transparent, ${borderGold}, transparent)` }} />
       </div>
 
       {/* ── Compact colour legend row ── */}
@@ -376,10 +347,7 @@ export function QuranDisplay({
             onMouseEnter={() => (setHoveredRule(info.color), setHoveredInfo(info))}
             onMouseLeave={() => (setHoveredRule(null), setHoveredInfo(null))}
           >
-            <div
-              className="w-2 h-2 rounded-full"
-              style={{ background: getTC(info.color, isDark) }}
-            />
+            <div className="w-2 h-2 rounded-full" style={{ background: getTC(info.color, isDark) }} />
             <span style={{ color: getTC(info.color, isDark) }}>{info.label}</span>
           </button>
         ))}
