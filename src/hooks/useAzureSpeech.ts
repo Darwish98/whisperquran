@@ -1,17 +1,15 @@
 /**
  * useAzureSpeech.ts
  *
- * Streams raw PCM16 mic audio to the backend WebSocket.
+ * Streams raw PCM16 mic audio to the FastConformer CTC backend via WebSocket.
  * Sends a JSON config frame first (with auth token), then binary audio chunks.
  * Returns TranscriptionResult objects.
  *
- * TAJWEED INTEGRATION: Added onAudioChunk callback so audio can be captured
- * for tajweed analysis alongside transcription.
+ * REQUIRES: Backend running at VITE_WS_URL (server_nemo.py)
+ * No browser fallback — if backend is down, shows error.
  *
  * SECURITY: Sends Supabase JWT token in the config handshake.
  * Backend validates token before allowing audio processing.
- *
- * Falls back to browser Web Speech API automatically if VITE_WS_URL is not set.
  */
 
 import { useState, useRef, useCallback, useEffect } from "react";
@@ -40,7 +38,6 @@ registerProcessor('pcm-processor', PcmProcessor);
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-export type SpeechMode = "azure" | "browser";
 export type MicPermission =
   | "idle"
   | "requesting"
@@ -71,13 +68,12 @@ export interface TranscriptionResult {
 
 interface StartOptions {
   refText?: string;
-  onAudioChunk?: (chunk: ArrayBuffer) => void; // ← NEW: tajweed audio capture
+  onAudioChunk?: (chunk: ArrayBuffer) => void;
 }
 
 interface UseAzureSpeechReturn {
   isListening: boolean;
   isConnected: boolean;
-  mode: SpeechMode;
   error: string | null;
   start: (
     onResult: (r: TranscriptionResult) => void,
@@ -100,13 +96,7 @@ export function useAzureSpeech(): UseAzureSpeechReturn {
   const streamRef = useRef<MediaStream | null>(null);
   const workletBlobRef = useRef<string | null>(null);
   const onResultRef = useRef<((r: TranscriptionResult) => void) | null>(null);
-  const onAudioChunkRef = useRef<((chunk: ArrayBuffer) => void) | null>(null); // ← NEW
-
-  // Browser fallback refs
-  const recogRef = useRef<any>(null);
-  const shouldRestartRef = useRef(false);
-
-  const mode: SpeechMode = WS_URL ? "azure" : "browser";
+  const onAudioChunkRef = useRef<((chunk: ArrayBuffer) => void) | null>(null);
 
   // ── Cleanup ──────────────────────────────────────────────────────────────
 
@@ -120,13 +110,7 @@ export function useAzureSpeech(): UseAzureSpeechReturn {
     wsRef.current?.close();
     wsRef.current = null;
 
-    shouldRestartRef.current = false;
-    try {
-      recogRef.current?.stop();
-    } catch {}
-    recogRef.current = null;
-
-    onAudioChunkRef.current = null; // ← NEW
+    onAudioChunkRef.current = null;
 
     setIsListening(false);
     setIsConnected(false);
@@ -149,17 +133,25 @@ export function useAzureSpeech(): UseAzureSpeechReturn {
     }
   }, []);
 
-  // ── Azure path ────────────────────────────────────────────────────────────
+  // ── WebSocket streaming path ──────────────────────────────────────────────
 
-  const startAzure = useCallback(
+  const startStreaming = useCallback(
     async (
       onResult: (r: TranscriptionResult) => void,
       opts: StartOptions = {},
     ) => {
       setError(null);
       onResultRef.current = onResult;
-      onAudioChunkRef.current = opts.onAudioChunk ?? null; // ← NEW
+      onAudioChunkRef.current = opts.onAudioChunk ?? null;
       unlockAudio();
+
+      // Check backend URL is configured
+      if (!WS_URL) {
+        setError(
+          "Backend not configured. Set VITE_WS_URL in your .env file.",
+        );
+        return;
+      }
 
       // Get current auth token
       const { data: sessionData } = await supabase.auth.getSession();
@@ -170,7 +162,7 @@ export function useAzureSpeech(): UseAzureSpeechReturn {
       }
 
       // Open WebSocket
-      const ws = new WebSocket(WS_URL!);
+      const ws = new WebSocket(WS_URL);
       wsRef.current = ws;
       ws.binaryType = "arraybuffer";
 
@@ -250,7 +242,7 @@ export function useAzureSpeech(): UseAzureSpeechReturn {
           type: "config",
           locale: "ar-SA",
           refText: opts.refText ?? null,
-          token: token, // SECURITY: Send JWT for backend validation
+          token: token,
         }),
       );
 
@@ -301,99 +293,28 @@ export function useAzureSpeech(): UseAzureSpeechReturn {
 
       worklet.port.onmessage = (e: MessageEvent<ArrayBuffer>) => {
         if (ws.readyState === WebSocket.OPEN) ws.send(e.data);
-        // ← NEW: Also forward chunk for tajweed analysis buffering
         onAudioChunkRef.current?.(e.data);
       };
 
       source.connect(worklet);
       setIsListening(true);
-      console.log("[useAzureSpeech] Started Azure streaming");
+      console.log("[useAzureSpeech] Connected to FastConformer backend");
     },
     [cleanup],
-  );
-
-  // ── Browser Web Speech API fallback ──────────────────────────────────────
-
-  const startBrowser = useCallback(
-    (onResult: (r: TranscriptionResult) => void, _opts: StartOptions = {}) => {
-      setError(null);
-      onResultRef.current = onResult;
-      shouldRestartRef.current = true;
-      unlockAudio();
-
-      const SR =
-        (window as any).SpeechRecognition ||
-        (window as any).webkitSpeechRecognition;
-
-      if (!SR) {
-        setError(
-          "Speech recognition not supported in this browser. Try Chrome or Edge.",
-        );
-        return;
-      }
-
-      const recognition = new SR();
-      recogRef.current = recognition;
-      recognition.lang = "ar-SA";
-      recognition.continuous = true;
-      recognition.interimResults = true;
-
-      recognition.onresult = (event: any) => {
-        const last = event.results[event.results.length - 1];
-        const text = last[0]?.transcript?.trim() ?? "";
-        onResultRef.current?.({
-          text,
-          isFinal: last.isFinal,
-        });
-      };
-
-      recognition.onerror = (event: any) => {
-        if (event.error === "not-allowed") {
-          setError(
-            "Microphone permission denied. Please allow microphone access.",
-          );
-        } else if (event.error !== "no-speech" && event.error !== "aborted") {
-          console.warn("[useAzureSpeech] Browser speech error:", event.error);
-        }
-      };
-
-      recognition.onend = () => {
-        if (shouldRestartRef.current) {
-          try {
-            recognition.start();
-          } catch {}
-        } else {
-          setIsListening(false);
-        }
-      };
-
-      try {
-        recognition.start();
-        setIsListening(true);
-        console.log("[useAzureSpeech] Started browser speech recognition");
-      } catch (err) {
-        setError("Failed to start speech recognition.");
-        console.error("[useAzureSpeech] Start error:", err);
-      }
-    },
-    [],
   );
 
   // ── Public API ──────────────────────────────────────────────────────────
 
   const start = useCallback(
     (onResult: (r: TranscriptionResult) => void, opts: StartOptions = {}) => {
-      if (WS_URL) {
-        startAzure(onResult, opts).catch((err) => {
-          console.error("[useAzureSpeech] Azure start error:", err);
-          setError("Failed to connect. Falling back to browser speech.");
-          startBrowser(onResult, opts);
-        });
-      } else {
-        startBrowser(onResult, opts);
-      }
+      startStreaming(onResult, opts).catch((err) => {
+        console.error("[useAzureSpeech] Connection error:", err);
+        setError(
+          "Failed to connect to backend. Make sure server_nemo.py is running.",
+        );
+      });
     },
-    [startAzure, startBrowser],
+    [startStreaming],
   );
 
   const stop = useCallback(() => {
@@ -401,5 +322,5 @@ export function useAzureSpeech(): UseAzureSpeechReturn {
     console.log("[useAzureSpeech] Stopped");
   }, [cleanup]);
 
-  return { isListening, isConnected, mode, error, start, stop, updateRefText };
+  return { isListening, isConnected, error, start, stop, updateRefText };
 }

@@ -19,8 +19,8 @@ import {
   useAzureSpeech,
   type TranscriptionResult,
 } from "@/hooks/useAzureSpeech";
-import { useTajweedAnalysis } from "@/hooks/useTajweedAnalysis"; // ← NEW
-import { TajweedScore } from "@/components/TajweedIndicator"; // ← NEW
+import { useTajweedAnalysis } from "@/hooks/useTajweedAnalysis";
+import { TajweedScore } from "@/components/TajweedIndicator";
 
 // MicPermission mirrors the type expected by RecitationControls
 type MicPermission = "idle" | "requesting" | "granted" | "denied" | "error";
@@ -108,7 +108,6 @@ export default function Index() {
     start,
     stop,
     updateRefText,
-    mode,
     error: speechError,
   } = useAzureSpeech();
   const { user, signOut } = useAuth();
@@ -116,7 +115,7 @@ export default function Index() {
   const { toast } = useToast();
   const navigate = useNavigate();
 
-  // ── Tajweed analysis hook (NEW) ───────────────────────────────────────────
+  // ── Tajweed analysis hook ─────────────────────────────────────────────────
   const {
     isAnalyzing: isTajweedAnalyzing,
     wordStatuses: tajweedStatuses,
@@ -155,7 +154,7 @@ export default function Index() {
       setLoading(true);
       setLastHeard("");
       setPhoneticInfo(null);
-      clearBuffer(); // ← NEW
+      clearBuffer();
 
       try {
         const w = await fetchSurahText(num);
@@ -200,7 +199,7 @@ export default function Index() {
     handleSurahSelect(1);
   }, []);
 
-  // ── Helper: trigger tajweed analysis when an ayah is complete (NEW) ───────
+  // ── Helper: trigger tajweed analysis when an ayah is complete ─────────────
   const triggerTajweedAnalysis = useCallback(
     (completedAyahNumber: number) => {
       const w = wordsRef.current;
@@ -254,7 +253,7 @@ export default function Index() {
         const next = new Map(prev);
 
         if (matched > 0) {
-          // Track ayah transition for tajweed analysis (NEW)
+          // Track ayah transition for tajweed analysis
           const prevAyah = w[idx]?.ayahNumber;
 
           for (let i = 0; i < matched; i++) {
@@ -270,7 +269,7 @@ export default function Index() {
             updateRefText(w[newIndex].text);
           }
 
-          // If we crossed an ayah boundary, trigger tajweed analysis (NEW)
+          // If we crossed an ayah boundary, trigger tajweed analysis
           const newAyah = w[newIndex]?.ayahNumber;
           if (prevAyah && newAyah && prevAyah !== newAyah) {
             triggerTajweedAnalysis(prevAyah);
@@ -287,11 +286,14 @@ export default function Index() {
           preloadWordAudio(urls);
 
           if (newIndex >= w.length) {
-            // Surah complete — trigger final ayah analysis (NEW)
+            // Surah complete — trigger final ayah analysis
             if (prevAyah) triggerTajweedAnalysis(prevAyah);
 
             stop();
-            toast({ title: "ماشاء الله", description: "Surah complete!" });
+            toast({
+              title: "\u0645\u0627\u0634\u0627\u0621 \u0627\u0644\u0644\u0647",
+              description: "Surah complete!",
+            });
             if (sessionStartRef.current > 0) {
               const dur = Math.floor(
                 (Date.now() - sessionStartRef.current) / 1000,
@@ -368,7 +370,7 @@ export default function Index() {
 
     // CRITICAL: unlockAudio must be called synchronously inside a click handler
     unlockAudio();
-    clearBuffer(); // ← NEW
+    clearBuffer();
 
     setMicPermission("requesting");
     sessionStartRef.current = Date.now();
@@ -394,7 +396,7 @@ export default function Index() {
     stop();
     setMicPermission("idle");
 
-    // Trigger tajweed analysis for whatever ayah we were on (NEW)
+    // Trigger tajweed analysis for whatever ayah we were on
     const w = wordsRef.current;
     const idx = currentIndexRef.current;
     if (w.length && idx < w.length) {
@@ -434,7 +436,7 @@ export default function Index() {
     setMicPermission("idle");
     setLastHeard("");
     setPhoneticInfo(null);
-    clearBuffer(); // ← NEW
+    clearBuffer();
     if (words.length) {
       setCurrentIndex(0);
       currentIndexRef.current = 0;
@@ -601,16 +603,8 @@ export default function Index() {
 
       {/* ── Status bar ── */}
       {isListening && (
-        <div
-          className={`px-4 py-1 text-center text-xs font-sans border-b shrink-0 ${
-            mode === "azure"
-              ? "bg-emerald-950/40 border-emerald-800/30 text-emerald-400"
-              : "bg-yellow-950/30 border-yellow-800/30 text-yellow-500"
-          }`}
-        >
-          {mode === "azure"
-            ? `🟢 Azure Speech · ${reciter.riwaya} · ${reciter.name}`
-            : "⚠️ Browser fallback — add VITE_WS_URL for Azure accuracy"}
+        <div className="px-4 py-1 text-center text-xs font-sans border-b shrink-0 bg-emerald-950/40 border-emerald-800/30 text-emerald-400">
+          🟢 FastConformer CTC · {reciter.riwaya} · {reciter.name}
         </div>
       )}
 
@@ -642,7 +636,7 @@ export default function Index() {
           <RecitationControls
             isRecording={isListening}
             isConnected={isConnected}
-            isAuthenticated={!!user}
+            isAuthenticated={!user}
             micPermission={micPermission}
             onStart={handleStart}
             onStop={handleStop}
@@ -654,7 +648,7 @@ export default function Index() {
             hasWords={words.length > 0}
           />
 
-          {/* Tajweed score display (NEW) */}
+          {/* Tajweed score display */}
           {tajweedResult && (
             <TajweedScore
               score={tajweedScore}
