@@ -92,14 +92,19 @@ export default function Index() {
   const sessionStartRef = useRef<number>(0);
   const wordsAttemptedRef = useRef(0);
   const reciterRef = useRef<Reciter>(DEFAULT_RECITER);
+  const audioHelpRef = useRef(true);
 
   useEffect(() => {
     reciterRef.current = reciter;
   }, [reciter]);
 
+  useEffect(() => {
+    audioHelpRef.current = audioHelp;
+  }, [audioHelp]);
+
   // Apply dark/light mode to document
   useEffect(() => {
-    document.documentElement.classList.toggle("dark", isDark);
+    document.documentElement.classList.toggle("light", !isDark);
   }, [isDark]);
 
   const {
@@ -314,18 +319,18 @@ export default function Index() {
           const newRetries = cur.retries + 1;
           next.set(idx, { state: "incorrect", retries: newRetries });
 
-          if (newRetries >= MAX_RETRIES_BEFORE_HELP && audioHelp) {
+          if (newRetries >= MAX_RETRIES_BEFORE_HELP && audioHelpRef.current) {
             const url = getAyahAudioUrl(
               w[idx].globalAyahNumber,
               reciterRef.current.id,
             );
 
             // Auto-play immediately
-            const audio = new Audio(url);
-            audio.play().catch(console.warn);
+            // Use shared player (already unlocked by user gesture)
+            playAudio(url);
 
             toast({
-              title: `🔊 ${reciterRef.current.nameAr}`,
+              title: `\uD83D\uDD0A ${reciterRef.current.nameAr}`,
               description: "Playing this ayah to help you.",
             });
           }
@@ -343,14 +348,7 @@ export default function Index() {
         return next;
       });
     },
-    [
-      audioHelp,
-      stop,
-      toast,
-      updateRefText,
-      saveRecitationHistory,
-      triggerTajweedAnalysis,
-    ],
+    [stop, toast, updateRefText, saveRecitationHistory, triggerTajweedAnalysis],
   );
 
   // ── Start / Stop / Reset ──────────────────────────────────────────────────
@@ -636,7 +634,7 @@ export default function Index() {
           <RecitationControls
             isRecording={isListening}
             isConnected={isConnected}
-            isAuthenticated={!user}
+            isAuthenticated={!!user}
             micPermission={micPermission}
             onStart={handleStart}
             onStop={handleStop}
