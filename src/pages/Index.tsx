@@ -71,6 +71,7 @@ const RECITERS_BY_RIWAYA = RECITERS.reduce<Record<string, Reciter[]>>(
 export default function Index() {
   const [selectedSurah, setSelectedSurah] = useState(1);
   const selectedSurahRef = useRef(1);
+  const tajweedRulesRef = useRef<Map<number, any[]>>(new Map());
   const [words, setWords] = useState<QuranWord[]>([]);
   const [surahList, setSurahList] = useState<SurahInfo[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
@@ -165,6 +166,22 @@ export default function Index() {
 
       try {
         const w = await fetchSurahText(num);
+        // Fetch tajweed annotations
+        try {
+          const API_BASE =
+            import.meta.env.VITE_API_URL || "http://localhost:8000";
+          const tajRes = await fetch(`${API_BASE}/tajweed/surah/${num}`);
+          const tajData = await tajRes.json();
+          // Store as a Map: globalIndex → rules array
+          const tajMap = new Map<number, any[]>();
+          for (const w of tajData.words || []) {
+            tajMap.set(w.index, w.rules);
+          }
+          tajweedRulesRef.current = tajMap;
+        } catch (e) {
+          console.warn("Tajweed annotations not available:", e);
+          tajweedRulesRef.current = new Map();
+        }
         setWords(w);
         wordsRef.current = w;
         setCurrentIndex(0);
@@ -742,6 +759,7 @@ export default function Index() {
               surahEnglishName={currentSurah?.englishName}
               surahNumber={selectedSurah}
               tajweedStatuses={tajweedStatuses}
+              tajweedRules={tajweedRulesRef.current}
             />
           )}
         </div>

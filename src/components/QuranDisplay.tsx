@@ -138,6 +138,7 @@ interface QuranDisplayProps {
   surahEnglishName?: string;
   surahNumber?: number;
   tajweedStatuses?: Map<number, WordTajweedStatus>;
+  tajweedRules?: Map<number, any[]>;
 }
 
 // ── Main component ────────────────────────────────────────────────────────────
@@ -151,6 +152,7 @@ export function QuranDisplay({
   surahEnglishName,
   surahNumber,
   tajweedStatuses,
+  tajweedRules,
 }: QuranDisplayProps) {
   const currentWordRef = useRef<HTMLSpanElement>(null);
   const [showLegend, setShowLegend] = useState(false);
@@ -228,8 +230,42 @@ export function QuranDisplay({
       wi < ayahWords.length - 1
         ? ayahWords[wi + 1]
         : ayahs.get(ayahNum + 1)?.[0];
-    const tajweed = getWordTajweedInfo(word.text, nextWord?.text);
-    const isHoverDimmed = hoveredRule && tajweed?.color !== hoveredRule;
+
+    // Phase 3: Use server-side tajweed rules if available, fallback to client-side
+    const serverRules = tajweedRules?.get(word.globalIndex);
+    let tajweedColor: string | null = null;
+    let tajweedInfo: TajweedInfo | null = null;
+
+    if (serverRules && serverRules.length > 0) {
+      // Map server rule category to CSS color class
+      const categoryToColor: Record<string, string> = {
+        ghunna: "tajweed-ghunna",
+        ikhfa: "tajweed-ikhfa",
+        idgham: "tajweed-idgham",
+        iqlab: "tajweed-iqlab",
+        qalqalah: "tajweed-qalqalah",
+        madd: "tajweed-madd",
+        lam_shams: "tajweed-idgham",
+      };
+      const primaryRule = serverRules[0];
+      tajweedColor = categoryToColor[primaryRule.category] || null;
+      tajweedInfo = {
+        rule: primaryRule.rule,
+        label: primaryRule.arabicName || primaryRule.rule,
+        arabic: primaryRule.arabicName,
+        description: primaryRule.description,
+        color: tajweedColor || "inherit",
+      } as TajweedInfo;
+    } else {
+      // Fallback to client-side detection
+      const clientTajweed = getWordTajweedInfo(word.text, nextWord?.text);
+      if (clientTajweed) {
+        tajweedColor = clientTajweed.color;
+        tajweedInfo = clientTajweed;
+      }
+    }
+
+    const isHoverDimmed = hoveredRule && tajweedColor !== hoveredRule;
     const tajweedAcoustic = tajweedStatuses?.get(word.globalIndex);
 
     let wordColor: string | undefined;
@@ -244,8 +280,7 @@ export function QuranDisplay({
           : "#1e8449";
     } else if (state === "incorrect")
       wordColor = isDark ? "#e74c3c" : "#c0392b";
-    else if (tajweed) wordColor = getTC(tajweed.color, isDark);
-
+    else if (tajweedColor) wordColor = getTC(tajweedColor, isDark);
     return (
       <span
         key={word.globalIndex}
@@ -259,7 +294,8 @@ export function QuranDisplay({
         )}
         style={state !== "current" ? { color: wordColor } : undefined}
         onMouseEnter={() =>
-          tajweed && (setHoveredRule(tajweed.color), setHoveredInfo(tajweed))
+          tajweedInfo &&
+          (setHoveredRule(tajweedColor!), setHoveredInfo(tajweedInfo))
         }
         onMouseLeave={() => (setHoveredRule(null), setHoveredInfo(null))}
       >
