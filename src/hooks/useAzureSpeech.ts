@@ -1,15 +1,16 @@
 /**
- * useAzureSpeech.ts
+ * useAzureSpeech.ts — Phase 2
  *
  * Streams raw PCM16 mic audio to the FastConformer CTC backend via WebSocket.
- * Sends a JSON config frame first (with auth token), then binary audio chunks.
- * Returns TranscriptionResult objects.
+ * Sends a JSON config frame first (with auth token + surah number).
  *
- * REQUIRES: Backend running at VITE_WS_URL (server_nemo.py)
- * No browser fallback — if backend is down, shows error.
+ * Phase 2 changes:
+ *   - Sends "surah" in config handshake for server-side QuranDB matching
+ *   - Handles "match" message type (server-side word matching results)
+ *   - Still handles legacy "final" for backward compatibility
+ *   - Sends "reset" and "setPosition" control messages
  *
- * SECURITY: Sends Supabase JWT token in the config handshake.
- * Backend validates token before allowing audio processing.
+ * REQUIRES: Backend running at VITE_WS_URL (server_nemo.py with QuranDB)
  */
 
 import { useState, useRef, useCallback, useEffect } from "react";
@@ -59,15 +60,43 @@ export interface WordResult {
   errorType?: string;
 }
 
+/** Phase 2: Server-side word match result */
+export interface ServerWordMatch {
+  index: number; // global word index in surah
+  expected: string; // diacritized expected word
+  spoken: string; // what CTC heard
+  similarity: number; // 0.0 - 1.0
+  matched: boolean; // true if similarity >= threshold
+  ayah: number; // ayah number
+  wordInAyah: number; // word index within ayah
+  retries: number; // server-side retry count
+}
+
+/** Phase 2: Server-side match result message */
+export interface MatchResult {
+  type: "match";
+  words: ServerWordMatch[];
+  position: number; // new global word position
+  ayah: number; // current ayah
+  wordsMatched: number; // how many words matched this chunk
+  totalWords: number; // total words in surah
+  complete: boolean; // true if surah complete
+  transcript: string; // raw CTC transcript for display
+}
+
 export interface TranscriptionResult {
   text: string;
   isFinal: boolean;
   words?: WordResult[];
   phonetic?: PhoneticScore;
+  /** Phase 2: server-side match results (when backend has QuranDB) */
+  match?: MatchResult;
 }
 
 interface StartOptions {
   refText?: string;
+  /** Phase 2: surah number for server-side matching */
+  surah?: number;
   onAudioChunk?: (chunk: ArrayBuffer) => void;
 }
 
@@ -80,7 +109,11 @@ interface UseAzureSpeechReturn {
     opts?: StartOptions,
   ) => void;
   stop: () => void;
-  updateRefText: (text: string) => void;
+  updateRefText: (text: string, surah?: number) => void;
+  /** Phase 2: reset server-side position tracking */
+  resetPosition: () => void;
+  /** Phase 2: jump to a specific word position */
+  setPosition: (position: number) => void;
 }
 
 // ── Hook ──────────────────────────────────────────────────────────────────────
@@ -123,13 +156,33 @@ export function useAzureSpeech(): UseAzureSpeechReturn {
     [cleanup],
   );
 
-  // ── Update ref text mid-session ──────────────────────────────────────────
+  // ── Update ref text mid-session (Phase 2: also sends surah) ──────────────
 
-  const updateRefText = useCallback((text: string) => {
+  const updateRefText = useCallback((text: string, surah?: number) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(
-        JSON.stringify({ type: "updateRefText", refText: text }),
+        JSON.stringify({
+          type: "updateRefText",
+          refText: text,
+          ...(surah != null && { surah }),
+        }),
       );
+    }
+  }, []);
+
+  // ── Phase 2: Reset server-side position ──────────────────────────────────
+
+  const resetPosition = useCallback(() => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: "reset" }));
+    }
+  }, []);
+
+  // ── Phase 2: Set server-side position ────────────────────────────────────
+
+  const setPosition = useCallback((position: number) => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: "setPosition", position }));
     }
   }, []);
 
@@ -145,15 +198,11 @@ export function useAzureSpeech(): UseAzureSpeechReturn {
       onAudioChunkRef.current = opts.onAudioChunk ?? null;
       unlockAudio();
 
-      // Check backend URL is configured
       if (!WS_URL) {
-        setError(
-          "Backend not configured. Set VITE_WS_URL in your .env file.",
-        );
+        setError("Backend not configured. Set VITE_WS_URL in your .env file.");
         return;
       }
 
-      // Get current auth token
       const { data: sessionData } = await supabase.auth.getSession();
       const token = sessionData?.session?.access_token;
       if (!token) {
@@ -161,7 +210,6 @@ export function useAzureSpeech(): UseAzureSpeechReturn {
         return;
       }
 
-      // Open WebSocket
       const ws = new WebSocket(WS_URL);
       wsRef.current = ws;
       ws.binaryType = "arraybuffer";
@@ -193,6 +241,18 @@ export function useAzureSpeech(): UseAzureSpeechReturn {
             setError(msg.message);
             return;
           }
+
+          // ── Phase 2: Handle server-side match results ─────────────────
+          if (msg.type === "match") {
+            onResultRef.current?.({
+              text: msg.transcript ?? "",
+              isFinal: true,
+              match: msg as MatchResult,
+            });
+            return;
+          }
+
+          // Legacy: handle "final" / "interim" (fallback when no surah detected)
           if (msg.type === "interim" || msg.type === "final") {
             onResultRef.current?.({
               text: msg.text ?? "",
@@ -236,12 +296,13 @@ export function useAzureSpeech(): UseAzureSpeechReturn {
         );
       });
 
-      // ① Send config handshake with auth token (MUST arrive before audio)
+      // ① Send config handshake with auth token + surah number (Phase 2)
       ws.send(
         JSON.stringify({
           type: "config",
           locale: "ar-SA",
           refText: opts.refText ?? null,
+          surah: opts.surah ?? null,
           token: token,
         }),
       );
@@ -298,7 +359,9 @@ export function useAzureSpeech(): UseAzureSpeechReturn {
 
       source.connect(worklet);
       setIsListening(true);
-      console.log("[useAzureSpeech] Connected to FastConformer backend");
+      console.log(
+        "[useAzureSpeech] Connected to FastConformer backend (Phase 2)",
+      );
     },
     [cleanup],
   );
@@ -322,5 +385,14 @@ export function useAzureSpeech(): UseAzureSpeechReturn {
     console.log("[useAzureSpeech] Stopped");
   }, [cleanup]);
 
-  return { isListening, isConnected, error, start, stop, updateRefText };
+  return {
+    isListening,
+    isConnected,
+    error,
+    start,
+    stop,
+    updateRefText,
+    resetPosition,
+    setPosition,
+  };
 }

@@ -113,6 +113,8 @@ export default function Index() {
     start,
     stop,
     updateRefText,
+    resetPosition,
+    setPosition,
     error: speechError,
   } = useAzureSpeech();
   const { user, signOut } = useAuth();
@@ -248,7 +250,124 @@ export default function Index() {
 
       wordsAttemptedRef.current++;
 
-      // Sanity check — ignore very short transcriptions (noise/hallucinations)
+      // ── Phase 2: Use server-side match results if available ────────────
+      if (result.match) {
+        const match = result.match;
+
+        setWordStatuses((prev) => {
+          const next = new Map(prev);
+
+          // Apply server-side word match results
+          for (const wm of match.words) {
+            if (wm.matched) {
+              next.set(wm.index, { state: "correct", retries: 0 });
+            } else if (wm.spoken) {
+              // Failed match — mark as incorrect with retry count
+              next.set(wm.index, {
+                state: "incorrect",
+                retries: wm.retries,
+              });
+            }
+          }
+
+          const newIndex = match.position;
+          const prevAyah = w[idx]?.ayahNumber;
+
+          // Update current position
+          currentIndexRef.current = newIndex;
+          setCurrentIndex(newIndex);
+
+          if (newIndex < w.length) {
+            next.set(newIndex, {
+              state: "current",
+              retries: next.get(newIndex)?.retries ?? 0,
+            });
+          }
+
+          // If we crossed an ayah boundary, trigger tajweed analysis
+          const newAyah = w[newIndex]?.ayahNumber;
+          if (prevAyah && newAyah && prevAyah !== newAyah) {
+            triggerTajweedAnalysis(prevAyah);
+          }
+
+          // Preload upcoming ayah audio
+          if (newIndex < w.length) {
+            const nextGlobalAyahs = [
+              ...new Set(
+                w.slice(newIndex, newIndex + 20).map((x) => x.globalAyahNumber),
+              ),
+            ];
+            const urls = nextGlobalAyahs.map((g) =>
+              getAyahAudioUrl(g, reciterRef.current.id),
+            );
+            preloadWordAudio(urls);
+          }
+
+          // Check for surah completion
+          if (match.complete || newIndex >= w.length) {
+            if (prevAyah) triggerTajweedAnalysis(prevAyah);
+
+            stop();
+            toast({
+              title: "ماشاء الله",
+              description: "Surah complete! 🎉",
+            });
+            if (sessionStartRef.current > 0) {
+              const dur = Math.floor(
+                (Date.now() - sessionStartRef.current) / 1000,
+              );
+              saveRecitationHistory(
+                selectedSurahRef.current,
+                dur,
+                wordsAttemptedRef.current,
+                w.length,
+              );
+            }
+          }
+
+          // Handle audio help for failed words
+          if (match.wordsMatched === 0 && match.words.length > 0) {
+            const failedWord = match.words[0];
+            if (
+              failedWord &&
+              !failedWord.matched &&
+              failedWord.retries >= MAX_RETRIES_BEFORE_HELP &&
+              audioHelpRef.current
+            ) {
+              const targetWord = w[failedWord.index];
+              if (targetWord) {
+                const url = getAyahAudioUrl(
+                  targetWord.globalAyahNumber,
+                  reciterRef.current.id,
+                );
+                playAudio(url);
+                toast({
+                  title: `🔊 ${reciterRef.current.nameAr}`,
+                  description: "Playing this ayah to help you.",
+                });
+              }
+            }
+
+            // Revert incorrect state back to current after delay
+            setTimeout(() => {
+              setWordStatuses((p) => {
+                const n = new Map(p);
+                const curIdx = currentIndexRef.current;
+                const s = n.get(curIdx);
+                if (s?.state === "incorrect")
+                  n.set(curIdx, { ...s, state: "current" });
+                return n;
+              });
+            }, 800);
+          }
+
+          return next;
+        });
+
+        return;
+      }
+
+      // ── Fallback: client-side matching (legacy, no server match) ───────
       if (result.text.trim().length < 3) return;
 
       const expectedSlice = w.slice(idx, idx + 10);
@@ -258,7 +377,6 @@ export default function Index() {
         const next = new Map(prev);
 
         if (matched > 0) {
-          // Track ayah transition for tajweed analysis
           const prevAyah = w[idx]?.ayahNumber;
 
           for (let i = 0; i < matched; i++) {
@@ -274,7 +392,6 @@ export default function Index() {
             updateRefText(w[newIndex].text);
           }
 
-          // If we crossed an ayah boundary, trigger tajweed analysis
           const newAyah = w[newIndex]?.ayahNumber;
           if (prevAyah && newAyah && prevAyah !== newAyah) {
             triggerTajweedAnalysis(prevAyah);
@@ -291,13 +408,11 @@ export default function Index() {
           preloadWordAudio(urls);
 
           if (newIndex >= w.length) {
-            // Surah complete — trigger final ayah analysis
             if (prevAyah) triggerTajweedAnalysis(prevAyah);
-
             stop();
             toast({
-              title: "\u0645\u0627\u0634\u0627\u0621 \u0627\u0644\u0644\u0647",
-              description: "Surah complete!",
+              title: "ماشاء الله",
+              description: "Surah complete! 🎉",
             });
             if (sessionStartRef.current > 0) {
               const dur = Math.floor(
@@ -324,13 +439,9 @@ export default function Index() {
               w[idx].globalAyahNumber,
               reciterRef.current.id,
             );
-
-            // Auto-play immediately
-            // Use shared player (already unlocked by user gesture)
             playAudio(url);
-
             toast({
-              title: `\uD83D\uDD0A ${reciterRef.current.nameAr}`,
+              title: `🔊 ${reciterRef.current.nameAr}`,
               description: "Playing this ayah to help you.",
             });
           }
@@ -376,6 +487,7 @@ export default function Index() {
     const currentWord = wordsRef.current[currentIndexRef.current];
     start(handleTranscription, {
       refText: currentWord?.text,
+      surah: selectedSurah,
       onAudioChunk: addAudioChunk,
     });
     setMicPermission("granted");
@@ -387,12 +499,17 @@ export default function Index() {
     toast,
     navigate,
     clearBuffer,
+    selectedSurah,
     addAudioChunk,
   ]);
 
   const handleStop = useCallback(() => {
     stop();
+    resetPosition(); // ← Phase 2: reset server-side position
     setMicPermission("idle");
+    setLastHeard("");
+    setPhoneticInfo(null);
+    clearBuffer();
 
     // Trigger tajweed analysis for whatever ayah we were on
     const w = wordsRef.current;
@@ -424,6 +541,8 @@ export default function Index() {
     completedWords,
     words.length,
     progress,
+    resetPosition,
+    clearBuffer,
     saveRecitationHistory,
     saveProgress,
     triggerTajweedAnalysis,
