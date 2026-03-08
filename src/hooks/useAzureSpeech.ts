@@ -60,16 +60,19 @@ export interface WordResult {
   errorType?: string;
 }
 
-/** Phase 2: Server-side word match result */
 export interface ServerWordMatch {
   index: number; // global word index in surah
   expected: string; // diacritized expected word
-  spoken: string; // what CTC heard
+  spoken: string; // what RNNT heard
   similarity: number; // 0.0 - 1.0
   matched: boolean; // true if similarity >= threshold
   ayah: number; // ayah number
   wordInAyah: number; // word index within ayah
   retries: number; // server-side retry count
+  /** Phase 4: Word-level timing from RNNT hypothesis (optional) */
+  startMs?: number; // ms from start of audio chunk
+  endMs?: number;
+  durationMs?: number; // endMs - startMs
 }
 
 /** Phase 2: Server-side match result message */

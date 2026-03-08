@@ -169,7 +169,7 @@ export default function Index() {
         // Fetch tajweed annotations
         try {
           const API_BASE =
-            import.meta.env.VITE_API_URL || "http://localhost:8000";
+            import.meta.env.VITE_BACKEND_URL || "http://localhost:8000";
           const tajRes = await fetch(`${API_BASE}/tajweed/surah/${num}`);
           const tajData = await tajRes.json();
           // Store as a Map: globalIndex → rules array
@@ -273,6 +273,11 @@ export default function Index() {
 
         setWordStatuses((prev) => {
           const next = new Map(prev);
+
+          for (const [key, val] of next.entries()) {
+            if (val.state === "current")
+              next.set(key, { ...val, state: "correct" });
+          }
 
           // Apply server-side word match results
           for (const wm of match.words) {
@@ -522,7 +527,6 @@ export default function Index() {
 
   const handleStop = useCallback(() => {
     stop();
-    resetPosition(); // ← Phase 2: reset server-side position
     setMicPermission("idle");
     setLastHeard("");
     setPhoneticInfo(null);
@@ -558,7 +562,6 @@ export default function Index() {
     completedWords,
     words.length,
     progress,
-    resetPosition,
     clearBuffer,
     saveRecitationHistory,
     saveProgress,
