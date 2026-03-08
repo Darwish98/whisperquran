@@ -570,6 +570,7 @@ export default function Index() {
 
   const handleReset = useCallback(() => {
     stop();
+    resetPosition();
     setMicPermission("idle");
     setLastHeard("");
     setPhoneticInfo(null);
