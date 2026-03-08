@@ -1,12 +1,10 @@
 /**
  * useTajweedAnalysis.ts
  *
- * Calls POST /analyze-tajweed after recitation completes.
- * Returns per-word tajweed verdicts (correct / violation + rule details).
- * ADDITIVE to existing useAzureSpeech — doesn't change transcription flow.
- *
- * Phase 3: Backend returns text-based rule identification (all confirmations).
- * Phase 5 (future): Backend will use audio for duration-based Ghunna/Madd verification.
+ * Key fix in this version:
+ *   - analyzeAyah now accepts globalIndexOffset so the returned wordStatuses
+ *     map is keyed by GLOBAL word index, not per-ayah word_index.
+ *   - QuranDisplay looks up by globalIndex — this makes them match.
  */
 
 import { useState, useRef, useCallback } from "react";
@@ -25,10 +23,12 @@ export interface TajweedViolation {
   timestamp?: number;
   details: string;
 }
+
 export interface WordTimingInput {
   word_index: number;
   duration_ms: number;
 }
+
 export interface TajweedResult {
   rules_found: number;
   rules_checked: number;
@@ -40,7 +40,8 @@ export interface TajweedResult {
 }
 
 export interface WordTajweedStatus {
-  word_index: number;
+  word_index: number; // per-ayah index (from server)
+  global_index: number; // global surah index (for QuranDisplay lookup)
   rules: TajweedViolation[];
   has_violation: boolean;
   worst_rule?: string;
@@ -49,12 +50,14 @@ export interface WordTajweedStatus {
 interface UseTajweedAnalysisReturn {
   isAnalyzing: boolean;
   lastResult: TajweedResult | null;
+  /** Keyed by GLOBAL word index — matches word.globalIndex in QuranDisplay */
   wordStatuses: Map<number, WordTajweedStatus>;
   error: string | null;
   analyzeAyah: (
     audioChunks: ArrayBuffer[],
     ayahWords: string[],
     wordTimings?: WordTimingInput[],
+    globalIndexOffset?: number, // first word's globalIndex in this ayah
   ) => Promise<TajweedResult | null>;
   addAudioChunk: (chunk: ArrayBuffer) => void;
   getBufferedAudio: () => ArrayBuffer[];
@@ -62,9 +65,6 @@ interface UseTajweedAnalysisReturn {
   overallScore: number | null;
 }
 
-// ── Hook ──────────────────────────────────────────────────────────────────────
-
-// Fixed: use VITE_BACKEND_URL to match .env (was VITE_API_URL)
 const API_BASE = import.meta.env.VITE_BACKEND_URL || "http://localhost:8000";
 
 export function useTajweedAnalysis(): UseTajweedAnalysisReturn {
@@ -95,14 +95,15 @@ export function useTajweedAnalysis(): UseTajweedAnalysisReturn {
       audioChunks: ArrayBuffer[],
       ayahWords: string[],
       wordTimings: WordTimingInput[] = [],
+      globalIndexOffset: number = 0,
     ): Promise<TajweedResult | null> => {
-      if (audioChunks.length === 0 || ayahWords.length === 0) return null;
+      if (ayahWords.length === 0) return null;
 
       setIsAnalyzing(true);
       setError(null);
 
       try {
-        // Merge chunks
+        // Merge audio chunks
         const totalLen = audioChunks.reduce((s, c) => s + c.byteLength, 0);
         const merged = new Uint8Array(totalLen);
         let off = 0;
@@ -134,32 +135,38 @@ export function useTajweedAnalysis(): UseTajweedAnalysisReturn {
         setLastResult(result);
         setOverallScore(result.score);
 
-        // Build per-word status map
-        const statuses = new Map<number, WordTajweedStatus>();
-        for (const v of result.violations) {
-          const ex = statuses.get(v.word_index) || {
-            word_index: v.word_index,
-            rules: [],
-            has_violation: false,
-          };
-          ex.rules.push(v);
-          ex.has_violation = true;
-          ex.worst_rule = v.rule;
-          statuses.set(v.word_index, ex);
-        }
-        for (const c of result.confirmations) {
-          const ex = statuses.get(c.word_index) || {
-            word_index: c.word_index,
-            rules: [],
-            has_violation: false,
-          };
-          ex.rules.push(c);
-          statuses.set(c.word_index, ex);
-        }
-        setWordStatuses(statuses);
+        // Build per-word status map keyed by GLOBAL index
+        // word_index from server is per-ayah (0, 1, 2...) → add offset
+        setWordStatuses((prev) => {
+          const next = new Map(prev);
+
+          for (const entry of [...result.violations, ...result.confirmations]) {
+            const globalIdx = entry.word_index + globalIndexOffset;
+            const ex = next.get(globalIdx) ?? {
+              word_index: entry.word_index,
+              global_index: globalIdx,
+              rules: [],
+              has_violation: false,
+            };
+            // Avoid duplicates
+            if (!ex.rules.find((r) => r.sub_type === entry.sub_type)) {
+              ex.rules.push(entry);
+            }
+            if (!entry.correct) {
+              ex.has_violation = true;
+              ex.worst_rule = entry.rule;
+            }
+            next.set(globalIdx, { ...ex });
+          }
+
+          return next;
+        });
+
         return result;
-      } catch (err: any) {
-        setError(err.message || "Tajweed analysis failed");
+      } catch (err: unknown) {
+        const msg =
+          err instanceof Error ? err.message : "Tajweed analysis failed";
+        setError(msg);
         return null;
       } finally {
         setIsAnalyzing(false);

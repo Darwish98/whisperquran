@@ -13,6 +13,7 @@ import { matchConsecutiveWords } from "@/lib/arabicUtils";
 import { playAudio, preloadWordAudio, unlockAudio } from "@/lib/audioPlayer";
 import { SurahSelector } from "@/components/SurahSelector";
 import { QuranDisplay } from "@/components/QuranDisplay";
+import type { ServerRule } from "@/components/QuranDisplay";
 import { RecitationControls } from "@/components/RecitationControls";
 import { MicStatus } from "@/components/MicStatus";
 import {
@@ -23,8 +24,7 @@ import {
   useTajweedAnalysis,
   type WordTimingInput,
 } from "@/hooks/useTajweedAnalysis";
-import { TajweedScore } from "@/components/TajweedIndicator";
-
+import { TajweedScoreBar } from "@/components/TajweedIndicator";
 // MicPermission mirrors the type expected by RecitationControls
 type MicPermission = "idle" | "requesting" | "granted" | "denied" | "error";
 import { useAuth } from "@/hooks/useAuth";
@@ -74,7 +74,7 @@ const RECITERS_BY_RIWAYA = RECITERS.reduce<Record<string, Reciter[]>>(
 export default function Index() {
   const [selectedSurah, setSelectedSurah] = useState(1);
   const selectedSurahRef = useRef(1);
-  const tajweedRulesRef = useRef<Map<number, any[]>>(new Map());
+  const tajweedRulesRef = useRef<Map<number, ServerRule[]>>(new Map());
   const [words, setWords] = useState<QuranWord[]>([]);
   const [surahList, setSurahList] = useState<SurahInfo[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
@@ -177,7 +177,7 @@ export default function Index() {
           const tajRes = await fetch(`${API_BASE}/tajweed/surah/${num}`);
           const tajData = await tajRes.json();
           // Store as a Map: globalIndex → rules array
-          const tajMap = new Map<number, any[]>();
+          const tajMap = new Map<number, ServerRule[]>();
           for (const w of tajData.words || []) {
             tajMap.set(w.index, w.rules);
           }
@@ -225,6 +225,7 @@ export default function Index() {
   // Load default surah on mount
   useEffect(() => {
     handleSurahSelect(1);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // ── Helper: trigger tajweed analysis when an ayah is complete ─────────────
@@ -242,11 +243,16 @@ export default function Index() {
         ayahWordTimingsRef.current.get(completedAyahNumber) ?? [];
       ayahWordTimingsRef.current.delete(completedAyahNumber);
 
+      // FIX: pass the global index of the first word in this ayah
+      // so useTajweedAnalysis can store results by globalIndex
+      const globalIndexOffset = ayahWords[0]?.globalIndex ?? 0;
+
       // Run analysis in background (non-blocking)
       analyzeAyah(
         audioChunks,
         ayahWords.map((aw) => aw.text),
         wordTimings,
+        globalIndexOffset,
       ).catch(console.error);
     },
     [analyzeAyah, getBufferedAudio],
@@ -600,7 +606,7 @@ export default function Index() {
       );
       setWordStatuses(statuses);
     }
-  }, [stop, words, clearBuffer]);
+  }, [stop, words, clearBuffer, resetPosition]);
 
   // ── Render ────────────────────────────────────────────────────────────────
 
@@ -805,7 +811,7 @@ export default function Index() {
 
           {/* Tajweed score display */}
           {tajweedResult && (
-            <TajweedScore
+            <TajweedScoreBar
               score={tajweedScore}
               rulesChecked={tajweedResult.rules_checked}
               violations={tajweedResult.violations.length}
