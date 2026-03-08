@@ -19,7 +19,10 @@ import {
   useAzureSpeech,
   type TranscriptionResult,
 } from "@/hooks/useAzureSpeech";
-import { useTajweedAnalysis } from "@/hooks/useTajweedAnalysis";
+import {
+  useTajweedAnalysis,
+  type WordTimingInput,
+} from "@/hooks/useTajweedAnalysis";
 import { TajweedScore } from "@/components/TajweedIndicator";
 
 // MicPermission mirrors the type expected by RecitationControls
@@ -140,6 +143,7 @@ export default function Index() {
     ayahNumber: number;
     chunks: ArrayBuffer[];
   }>({ ayahNumber: 0, chunks: [] });
+  const ayahWordTimingsRef = useRef<Map<number, WordTimingInput[]>>(new Map());
 
   const completedWords = [...wordStatuses.values()].filter(
     (s) => s.state === "correct",
@@ -226,24 +230,27 @@ export default function Index() {
   // ── Helper: trigger tajweed analysis when an ayah is complete ─────────────
   const triggerTajweedAnalysis = useCallback(
     (completedAyahNumber: number) => {
-      const w = wordsRef.current;
-      const ayahWords = w.filter(
+      const ayahWords = wordsRef.current.filter(
         (word) => word.ayahNumber === completedAyahNumber,
       );
       if (ayahWords.length === 0) return;
 
       const audioChunks = getBufferedAudio();
-      if (audioChunks.length === 0) return;
+
+      // Phase 5: grab accumulated word timings for this ayah then clear
+      const wordTimings =
+        ayahWordTimingsRef.current.get(completedAyahNumber) ?? [];
+      ayahWordTimingsRef.current.delete(completedAyahNumber);
 
       // Run analysis in background (non-blocking)
       analyzeAyah(
         audioChunks,
         ayahWords.map((aw) => aw.text),
+        wordTimings,
       ).catch(console.error);
     },
     [analyzeAyah, getBufferedAudio],
   );
-
   // ── Transcription handler ─────────────────────────────────────────────────
   const handleTranscription = useCallback(
     (result: TranscriptionResult) => {
@@ -270,7 +277,16 @@ export default function Index() {
       // ── Phase 2: Use server-side match results if available ────────────
       if (result.match) {
         const match = result.match;
-
+        for (const wm of match.words) {
+          if (wm.matched && wm.durationMs != null) {
+            const ayahTimings = ayahWordTimingsRef.current.get(wm.ayah) ?? [];
+            ayahTimings.push({
+              word_index: wm.wordInAyah,
+              duration_ms: wm.durationMs,
+            });
+            ayahWordTimingsRef.current.set(wm.ayah, ayahTimings);
+          }
+        }
         setWordStatuses((prev) => {
           const next = new Map(prev);
 

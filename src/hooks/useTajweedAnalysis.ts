@@ -25,7 +25,10 @@ export interface TajweedViolation {
   timestamp?: number;
   details: string;
 }
-
+export interface WordTimingInput {
+  word_index: number;
+  duration_ms: number;
+}
 export interface TajweedResult {
   rules_found: number;
   rules_checked: number;
@@ -51,6 +54,7 @@ interface UseTajweedAnalysisReturn {
   analyzeAyah: (
     audioChunks: ArrayBuffer[],
     ayahWords: string[],
+    wordTimings?: WordTimingInput[],
   ) => Promise<TajweedResult | null>;
   addAudioChunk: (chunk: ArrayBuffer) => void;
   getBufferedAudio: () => ArrayBuffer[];
@@ -90,6 +94,7 @@ export function useTajweedAnalysis(): UseTajweedAnalysisReturn {
     async (
       audioChunks: ArrayBuffer[],
       ayahWords: string[],
+      wordTimings: WordTimingInput[] = [],
     ): Promise<TajweedResult | null> => {
       if (audioChunks.length === 0 || ayahWords.length === 0) return null;
 
@@ -115,7 +120,11 @@ export function useTajweedAnalysis(): UseTajweedAnalysisReturn {
         const resp = await fetch(`${API_BASE}/analyze-tajweed`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ audio_base64: b64, ayah_words: ayahWords }),
+          body: JSON.stringify({
+            audio_base64: b64,
+            ayah_words: ayahWords,
+            word_timings: wordTimings,
+          }),
         });
 
         if (!resp.ok)
