@@ -1,14 +1,14 @@
 /**
- * QuranDisplay.tsx — Production rewrite
+ * QuranDisplay.tsx — Complete rewrite
  *
- * Changes vs previous version:
- * 1. Character-level tajweed coloring using charStart/charEnd from server
- * 2. current-word-highlight CSS class (gold underline + glow, no background)
- * 3. Correct word: green for unannotated chars, tajweed colors kept on letters
- * 4. TajweedBadge shown inline after each correct word that has acoustic results
- *    — badge keyed by word.globalIndex (matches useTajweedAnalysis fix)
- * 5. TajweedScoreBar shown below text after ayah analysis
- * 6. tajweedScore + tajweedResult passed in as props (wired in Index.tsx)
+ * Behaviour contract:
+ *  - PENDING   words: tajweed rule chars colored (so user knows how to recite),
+ *                     non-rule chars at default text color
+ *  - CURRENT   word:  gold via CSS class, no tajweed coloring
+ *  - CORRECT   word:  tajweed rule chars colored per Mushaf scheme;
+ *                     non-rule chars colored green (or amber if tajweed violation)
+ *  - INCORRECT word:  all chars red, no tajweed coloring
+ *  - TajweedBadge shown only on CORRECT words that have acoustic analysis results
  */
 
 import { useRef, useState, useEffect } from "react";
@@ -48,31 +48,25 @@ function useDarkMode() {
   return isDark;
 }
 
-// ── Colors ────────────────────────────────────────────────────────────────────
+// ── Tajweed colors (Madina Mushaf scheme) ─────────────────────────────────────
 
 const CAT_COLORS: Record<string, { light: string; dark: string }> = {
-  ghunna: { light: "#c0392b", dark: "#e74c3c" },
-  qalqalah: { light: "#1e8449", dark: "#2ecc71" },
-  madd: { light: "#1a5276", dark: "#5dade2" },
-  ikhfa: { light: "#a04000", dark: "#e67e22" },
-  idgham: { light: "#0e6655", dark: "#1abc9c" },
-  iqlab: { light: "#6c3483", dark: "#a569bd" },
-  lam_shams: { light: "#0e6655", dark: "#1abc9c" },
+  ghunna: { light: "#c0392b", dark: "#e74c3c" }, // red
+  qalqalah: { light: "#1e8449", dark: "#2ecc71" }, // green
+  madd: { light: "#1a5276", dark: "#5dade2" }, // blue
+  ikhfa: { light: "#a04000", dark: "#e67e22" }, // orange
+  idgham: { light: "#0e6655", dark: "#1abc9c" }, // teal
+  iqlab: { light: "#6c3483", dark: "#a569bd" }, // purple
+  lam_shams: { light: "#7b6000", dark: "#d4a800" }, // amber-gold (distinct)
 };
 
 function catColor(cat: string, isDark: boolean): string {
-  return isDark
-    ? (CAT_COLORS[cat]?.dark ?? "inherit")
-    : (CAT_COLORS[cat]?.light ?? "inherit");
+  const c = CAT_COLORS[cat];
+  if (!c) return "inherit";
+  return isDark ? c.dark : c.light;
 }
 
-// ── Char-level color map ──────────────────────────────────────────────────────
-
-interface CharAnnotation {
-  color: string;
-  category: string;
-  rule: string;
-}
+// ── Types ─────────────────────────────────────────────────────────────────────
 
 export interface ServerRule {
   rule: string;
@@ -84,46 +78,93 @@ export interface ServerRule {
   harakatCount?: number;
 }
 
+interface CharAnnotation {
+  color: string;
+  category: string;
+}
+
+interface WordStatus {
+  state: "pending" | "current" | "correct" | "incorrect";
+  retries: number;
+}
+
+interface QuranDisplayProps {
+  words: QuranWord[];
+  currentIndex: number;
+  wordStatuses: Map<number, WordStatus>;
+  showPending: boolean;
+  surahName?: string;
+  surahEnglishName?: string;
+  surahNumber?: number;
+  tajweedStatuses?: Map<number, WordTajweedStatus>;
+  tajweedRules?: Map<number, ServerRule[]>;
+  tajweedScore?: number | null;
+  tajweedResult?: {
+    rules_checked: number;
+    violations: TajweedViolation[];
+  } | null;
+}
+
+// ── Arabic tashkeel codepoints (never colored individually) ───────────────────
+// These diacritics ride visually on base letters and inherit their color.
+
+const TASHKEEL = new Set([
+  0x064b, 0x064c, 0x064d, 0x064e, 0x064f, 0x0650, 0x0651, 0x0652, 0x0653,
+  0x0654, 0x0655, 0x0656, 0x0657, 0x0658, 0x0659, 0x065a, 0x065b, 0x065c,
+  0x065d, 0x065e, 0x065f, 0x0670,
+]);
+
+// ── Char-level annotation map ─────────────────────────────────────────────────
+
 function buildCharMap(
   text: string,
   rules: ServerRule[],
   isDark: boolean,
 ): Map<number, CharAnnotation> {
   const map = new Map<number, CharAnnotation>();
-  if (!rules?.length) return map;
+  if (!rules.length) return map;
 
-  const priority = [
-    "lam_shams",
-    "ikhfa",
-    "ikhfa_shafawi",
-    "idgham_ghunnah",
-    "idgham_no_ghunnah",
-    "idgham_shafawi",
-    "iqlab",
-    "qalqalah",
-    "madd_2",
-    "madd_246",
-    "madd_munfasil",
-    "madd_muttasil",
-    "madd_6",
-    "ghunnah",
-  ];
+  // Higher index = higher priority (overwrites lower)
+  const PRIORITY: Record<string, number> = {
+    lam_shamsiyyah: 1,
+    lam_shams: 1,
+    ikhfa: 2,
+    ikhfa_shafawi: 2,
+    idgham_ghunnah: 3,
+    idgham_no_ghunnah: 3,
+    idgham_shafawi: 3,
+    iqlab: 4,
+    qalqalah: 5,
+    madd_2: 6,
+    madd_246: 7,
+    madd_munfasil: 8,
+    madd_muttasil: 9,
+    madd_6: 10,
+    ghunnah: 11,
+  };
 
+  // Sort ascending so higher-priority rules overwrite
   const sorted = [...rules].sort(
-    (a, b) =>
-      (priority.indexOf(a.rule) + 1 || 99) -
-      (priority.indexOf(b.rule) + 1 || 99),
+    (a, b) => (PRIORITY[a.rule] ?? 0) - (PRIORITY[b.rule] ?? 0),
   );
+
+  const chars = [...text];
 
   for (const rule of sorted) {
     const color = catColor(rule.category, isDark);
     if (color === "inherit") continue;
+
     const start = rule.charStart ?? 0;
-    const end = rule.charEnd ?? text.length;
+    const end = Math.min(rule.charEnd ?? chars.length, chars.length);
+
     for (let i = start; i < end; i++) {
-      map.set(i, { color, category: rule.category, rule: rule.rule });
+      const cp = chars[i].codePointAt(0) ?? 0;
+      // Skip standalone tashkeel — they inherit the base letter's color
+      if (TASHKEEL.has(cp)) continue;
+      map.set(i, { color, category: rule.category });
     }
   }
+
   return map;
 }
 
@@ -142,6 +183,7 @@ function WordChars({
 }) {
   const chars = [...text];
 
+  // CURRENT: gold via parent CSS class — no inline color so the class wins
   if (state === "current") {
     return (
       <>
@@ -156,28 +198,39 @@ function WordChars({
     <>
       {chars.map((ch, i) => {
         const ann = charMap.get(i);
-        if (state === "correct" || state === "incorrect") {
-          const color = ann?.color ?? recitationColor;
-          return (
-            <span key={i} style={color ? { color } : undefined}>
+        const cp = ch.codePointAt(0) ?? 0;
+
+        if (TASHKEEL.has(cp)) {
+          // Tashkeel inherits base letter color — no explicit style
+          return <span key={i}>{ch}</span>;
+        }
+
+        if (state === "pending") {
+          // PENDING: show tajweed rule colors so the user knows how to recite.
+          // Non-annotated chars stay at default text color (no recitation color yet).
+          return ann ? (
+            <span key={i} style={{ color: ann.color }}>
               {ch}
             </span>
+          ) : (
+            <span key={i}>{ch}</span>
           );
         }
-        // pending: only tajweed chars colored
-        return ann ? (
-          <span key={i} style={{ color: ann.color }}>
+
+        // CORRECT / INCORRECT: tajweed rule color on annotated chars,
+        // recitation outcome color (green/amber/red) on everything else.
+        const color = ann?.color ?? recitationColor;
+        return (
+          <span key={i} style={color ? { color } : undefined}>
             {ch}
           </span>
-        ) : (
-          <span key={i}>{ch}</span>
         );
       })}
     </>
   );
 }
 
-// ── Legend panel ──────────────────────────────────────────────────────────────
+// ── Legend ────────────────────────────────────────────────────────────────────
 
 function Legend({ onClose, isDark }: { onClose: () => void; isDark: boolean }) {
   return (
@@ -225,31 +278,6 @@ function Legend({ onClose, isDark }: { onClose: () => void; isDark: boolean }) {
   );
 }
 
-// ── Types ─────────────────────────────────────────────────────────────────────
-
-interface WordStatus {
-  state: "pending" | "current" | "correct" | "incorrect";
-  retries: number;
-}
-
-interface QuranDisplayProps {
-  words: QuranWord[];
-  currentIndex: number;
-  wordStatuses: Map<number, WordStatus>;
-  showPending: boolean;
-  surahName?: string;
-  surahEnglishName?: string;
-  surahNumber?: number;
-  /** Keyed by globalIndex — from useTajweedAnalysis with globalIndexOffset fix */
-  tajweedStatuses?: Map<number, WordTajweedStatus>;
-  tajweedRules?: Map<number, ServerRule[]>;
-  tajweedScore?: number | null;
-  tajweedResult?: {
-    rules_checked: number;
-    violations: TajweedViolation[];
-  } | null;
-}
-
 // ── Main component ─────────────────────────────────────────────────────────────
 
 export function QuranDisplay({
@@ -286,7 +314,7 @@ export function QuranDisplay({
     }
   }, [currentIndex, viewMode]);
 
-  const pageBackground = isDark
+  const pageBg = isDark
     ? "linear-gradient(160deg, hsl(40 20% 7%) 0%, hsl(40 15% 5%) 100%)"
     : "linear-gradient(160deg, #fdf8f0 0%, #f9f1df 100%)";
   const borderGold = isDark ? "rgba(180,140,60,0.18)" : "rgba(150,110,30,0.2)";
@@ -307,13 +335,15 @@ export function QuranDisplay({
     );
   }
 
-  const ayahs = new Map<number, QuranWord[]>();
+  // Group words by ayah
+  const ayahMap = new Map<number, QuranWord[]>();
   for (const w of words) {
-    const arr = ayahs.get(w.ayahNumber) ?? [];
+    const arr = ayahMap.get(w.ayahNumber) ?? [];
     arr.push(w);
-    ayahs.set(w.ayahNumber, arr);
+    ayahMap.set(w.ayahNumber, arr);
   }
 
+  // Group words by page (for book view)
   const pageMap = new Map<number, QuranWord[]>();
   for (const w of words) {
     if (w.page == null) continue;
@@ -323,33 +353,40 @@ export function QuranDisplay({
   }
   const pageNumbers = Array.from(pageMap.keys()).sort((a, b) => a - b);
 
-  // ── Word renderer ────────────────────────────────────────────────────────
+  // ── Single word ──────────────────────────────────────────────────────────
+
   const renderWord = (word: QuranWord) => {
     const isCurrent = word.globalIndex === currentIndex;
     const status = wordStatuses.get(word.globalIndex);
     const state = status?.state ?? "pending";
     const retries = status?.retries ?? 0;
 
+    // Tajweed rule char map — only used after recitation
     const serverRules = tajweedRules?.get(word.globalIndex) ?? [];
     const charMap = buildCharMap(word.text, serverRules, isDark);
-    const primaryCat = serverRules[0]?.category ?? null;
-    const isHoverDimmed = hoveredRule && primaryCat !== hoveredRule;
 
+    // Rule hover dimming
+    const primaryCat = serverRules[0]?.category ?? null;
+    const isHoverDimmed = hoveredRule !== null && primaryCat !== hoveredRule;
+
+    // Acoustic analysis result (only populated after ayah is recited)
     const tajweedAcoustic = tajweedStatuses?.get(word.globalIndex);
 
+    // Color for non-annotated characters after recitation
     let recitationColor: string | undefined;
     if (state === "correct") {
       recitationColor = tajweedAcoustic?.has_violation
         ? isDark
           ? "#f39c12"
-          : "#e67e22"
+          : "#e67e22" // amber = correct word, tajweed violation
         : isDark
           ? "#2ecc71"
-          : "#1e8449";
+          : "#1e8449"; // green  = correct word, good tajweed
     } else if (state === "incorrect") {
-      recitationColor = isDark ? "#e74c3c" : "#c0392b";
+      recitationColor = isDark ? "#e74c3c" : "#c0392b"; // red
     }
 
+    // Hover handler for rule info bar (only words with server rules)
     const hoverHandlers = primaryCat
       ? {
           onMouseEnter: () => {
@@ -378,7 +415,7 @@ export function QuranDisplay({
           "relative inline-block cursor-default mx-[0.1em]",
           isCurrent && "current-word-highlight",
           state === "incorrect" && "animate-[shake_0.3s_ease-in-out]",
-          isHoverDimmed && "opacity-20",
+          isHoverDimmed && "opacity-20 transition-opacity",
         )}
         {...hoverHandlers}
       >
@@ -389,6 +426,7 @@ export function QuranDisplay({
           recitationColor={recitationColor}
         />
 
+        {/* Retry count badge */}
         {isCurrent && retries > 0 && (
           <sup
             className="absolute -top-2 left-1/2 -translate-x-1/2 text-[8px] font-sans rounded-full px-1 border leading-none py-0.5"
@@ -402,14 +440,18 @@ export function QuranDisplay({
           </sup>
         )}
 
-        {state === "correct" && tajweedAcoustic && (
-          <TajweedBadge status={tajweedAcoustic} isDark={isDark} />
-        )}
+        {/* Acoustic tajweed badge — ONLY on correctly recited words with analysis */}
+        {state === "correct" &&
+          tajweedAcoustic &&
+          tajweedAcoustic.rules.length > 0 && (
+            <TajweedBadge status={tajweedAcoustic} isDark={isDark} />
+          )}
       </span>
     );
   };
 
-  // ── Ayah renderer ─────────────────────────────────────────────────────────
+  // ── Ayah ─────────────────────────────────────────────────────────────────
+
   const renderAyah = (ayahNum: number, ayahWords: QuranWord[]) => {
     const isAheadOfCurrent = ayahWords[0].globalIndex > currentIndex;
     const isFullyPending = ayahWords.every(
@@ -423,7 +465,7 @@ export function QuranDisplay({
         <span key={ayahNum} className="inline">
           <span
             className="inline-block mx-2 font-quran"
-            style={{ color: goldColor, fontSize: "0.65em", opacity: 0.4 }}
+            style={{ color: goldColor, fontSize: "0.6em", opacity: 0.35 }}
           >
             ﴿{ayahNum}﴾
           </span>
@@ -436,7 +478,7 @@ export function QuranDisplay({
         {ayahWords.map((w) => renderWord(w))}
         <span
           className="inline-block mx-1 font-quran"
-          style={{ color: goldColor, fontSize: "0.65em", opacity: 0.7 }}
+          style={{ color: goldColor, fontSize: "0.6em", opacity: 0.65 }}
         >
           ﴿{ayahNum}﴾
         </span>
@@ -445,33 +487,36 @@ export function QuranDisplay({
   };
 
   const quranTextStyle: React.CSSProperties = {
-    fontFamily: "'Amiri', serif",
+    fontFamily: "'Amiri', 'KFGQPC Uthmanic Script HAFS', serif",
     direction: "rtl",
     textAlign: "justify",
-    lineHeight: 3,
-    fontSize: "clamp(1.3rem, 2.5vw, 1.75rem)",
+    lineHeight: 3.2,
+    fontSize: "clamp(1.35rem, 2.5vw, 1.85rem)",
     color: textColor,
+    wordSpacing: "0.06em",
   };
+
+  // ── Views ─────────────────────────────────────────────────────────────────
 
   const renderScrollView = () => (
     <div
-      className="rounded-2xl p-6 md:p-8"
-      style={{ background: pageBackground, border: `1px solid ${borderGold}` }}
+      className="rounded-2xl p-6 md:p-10"
+      style={{ background: pageBg, border: `1px solid ${borderGold}` }}
     >
       {surahName && (
-        <div className="text-center mb-6">
+        <div className="text-center mb-8">
           <div className="font-quran text-2xl" style={{ color: goldColor }}>
             {surahName}
           </div>
           {surahEnglishName && (
-            <div className="text-xs text-muted-foreground mt-1">
+            <div className="text-xs text-muted-foreground mt-1 tracking-wider font-sans">
               {surahEnglishName}
             </div>
           )}
         </div>
       )}
       <div style={quranTextStyle}>
-        {Array.from(ayahs.entries()).map(([n, aw]) => renderAyah(n, aw))}
+        {Array.from(ayahMap.entries()).map(([n, aw]) => renderAyah(n, aw))}
       </div>
     </div>
   );
@@ -501,18 +546,15 @@ export function QuranDisplay({
     return (
       <div className="flex flex-col gap-3">
         <div
-          className="rounded-2xl p-6 md:p-8 min-h-[60vh]"
-          style={{
-            background: pageBackground,
-            border: `1px solid ${borderGold}`,
-          }}
+          className="rounded-2xl p-6 md:p-10 min-h-[60vh]"
+          style={{ background: pageBg, border: `1px solid ${borderGold}` }}
         >
           <div style={quranTextStyle}>
             {Array.from(pageAyahs.entries()).map(([n, aw]) =>
               renderAyah(n, aw),
             )}
           </div>
-          <div className="text-center mt-3 text-xs text-muted-foreground">
+          <div className="text-center mt-3 text-xs text-muted-foreground font-sans">
             {pageNum}
           </div>
         </div>
@@ -524,7 +566,7 @@ export function QuranDisplay({
           >
             <ChevronLeft className="w-4 h-4" />
           </button>
-          <span className="text-sm text-muted-foreground">
+          <span className="text-sm text-muted-foreground font-sans">
             Page {pageNum} · {currentPageIdx + 1}/{pageNumbers.length}
           </span>
           <button
@@ -543,10 +585,13 @@ export function QuranDisplay({
     );
   };
 
+  // ── Root render ───────────────────────────────────────────────────────────
+
   return (
     <div className="flex flex-col gap-3" dir="ltr">
-      {/* Toolbar */}
+      {/* ── Toolbar ── */}
       <div className="flex items-center justify-between flex-wrap gap-2">
+        {/* View mode toggle */}
         <div className="flex items-center gap-1.5">
           {(["scroll", "book"] as const).map((mode) => (
             <button
@@ -564,15 +609,17 @@ export function QuranDisplay({
               ) : (
                 <BookOpen className="w-3.5 h-3.5" />
               )}
-              {mode.charAt(0).toUpperCase() + mode.slice(1)}
+              {mode === "scroll" ? "Scroll" : "Book"}
             </button>
           ))}
         </div>
 
+        {/* Tajweed rule legend chips */}
         <div className="relative flex items-center gap-2.5 flex-wrap">
           <button
             onClick={() => setShowLegend((s) => !s)}
             className="p-1.5 rounded-lg border border-border text-muted-foreground hover:text-foreground transition-colors"
+            title="Tajweed color guide"
           >
             <Info className="w-3.5 h-3.5" />
           </button>
@@ -584,7 +631,7 @@ export function QuranDisplay({
             <button
               key={info.rule}
               className={cn(
-                "flex items-center gap-1 text-xs font-sans transition-opacity",
+                "flex items-center gap-1 text-xs font-sans transition-opacity duration-150",
                 hoveredRule && hoveredRule !== info.rule
                   ? "opacity-20"
                   : "opacity-100",
@@ -599,7 +646,7 @@ export function QuranDisplay({
               }}
             >
               <span
-                className="w-2 h-2 rounded-full inline-block"
+                className="w-2 h-2 rounded-full inline-block flex-shrink-0"
                 style={{ background: catColor(info.rule, isDark) }}
               />
               <span style={{ color: catColor(info.rule, isDark) }}>
@@ -610,11 +657,11 @@ export function QuranDisplay({
         </div>
       </div>
 
-      {/* Hovered rule description bar */}
+      {/* ── Hovered rule info bar ── */}
       {hoveredInfo && (
         <div
           className="text-xs font-sans px-3 py-2 rounded-lg border border-border"
-          style={{ background: isDark ? "hsl(160 18% 10%)" : "#f7f7f7" }}
+          style={{ background: isDark ? "hsl(160 18% 9%)" : "#f7f7f7" }}
           dir="ltr"
         >
           <span
@@ -623,16 +670,17 @@ export function QuranDisplay({
           >
             {hoveredInfo.label}
           </span>
-          <span className="mx-2 text-muted-foreground">·</span>
+          <span className="mx-2 opacity-30">·</span>
           <span className="text-muted-foreground">
             {hoveredInfo.description}
           </span>
         </div>
       )}
 
+      {/* ── Quran text ── */}
       {viewMode === "scroll" ? renderScrollView() : renderBookView()}
 
-      {/* Tajweed score bar shown after ayah analysis completes */}
+      {/* ── Tajweed score (shown after ayah analysis) ── */}
       {tajweedScore != null && tajweedResult && (
         <TajweedScoreBar
           score={tajweedScore}
