@@ -77,6 +77,52 @@ const RULE_META: Record<
     guidance_violation:
       "Convert the noon to a meem sound (lips together) before ب.",
   },
+  lam_shams: {
+    label: "Lam Shams",
+    arabic: "لام شمسية",
+    color: "#d4a800",
+    guidance_correct: "Good — lam correctly assimilated into the sun letter.",
+    guidance_violation:
+      "The lam is silent here — blend directly into the next letter.",
+  },
+  madd_2: {
+    label: "Madd 2",
+    arabic: "مد طبيعي",
+    color: "#5dade2",
+    guidance_correct: "Good — natural madd held for 2 counts.",
+    guidance_violation: "Extend the vowel for 2 counts.",
+  },
+  madd_246: {
+    label: "Madd ʿĀriḍ",
+    arabic: "مد عارض",
+    color: "#2e86c1",
+    guidance_correct: "Good — paused correctly at 2, 4, or 6 counts.",
+    guidance_violation:
+      "At waqf, hold this vowel for at least 2 counts (4 or 6 is better).",
+  },
+  madd_munfasil: {
+    label: "Madd Munfaṣil",
+    arabic: "مد منفصل",
+    color: "#1e8bc3",
+    guidance_correct: "Good — separated madd held for 4–5 counts.",
+    guidance_violation:
+      "Hold this vowel for 4–5 counts before the hamza in the next word.",
+  },
+  madd_muttasil: {
+    label: "Madd Muttaṣil",
+    arabic: "مد متصل",
+    color: "#1565c0",
+    guidance_correct: "Good — connected madd held for 4–5 counts.",
+    guidance_violation:
+      "Hold this vowel for 4–5 counts — the hamza follows in the same word.",
+  },
+  madd_6: {
+    label: "Madd Lāzim",
+    arabic: "مد لازم",
+    color: "#0a3d91",
+    guidance_correct: "Good — obligatory madd held for 6 counts.",
+    guidance_violation: "Must hold exactly 6 counts — this madd is obligatory.",
+  },
 };
 
 // ── Portal tooltip ─────────────────────────────────────────────────────────────

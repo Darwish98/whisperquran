@@ -51,13 +51,24 @@ function useDarkMode() {
 // ── Tajweed colors (Madina Mushaf scheme) ─────────────────────────────────────
 
 const CAT_COLORS: Record<string, { light: string; dark: string }> = {
+  // ── Non-madd rules ────────────────────────────────────────────────────────
   ghunna: { light: "#c0392b", dark: "#e74c3c" }, // red
   qalqalah: { light: "#1e8449", dark: "#2ecc71" }, // green
-  madd: { light: "#1a5276", dark: "#5dade2" }, // blue
   ikhfa: { light: "#a04000", dark: "#e67e22" }, // orange
   idgham: { light: "#0e6655", dark: "#1abc9c" }, // teal
   iqlab: { light: "#6c3483", dark: "#a569bd" }, // purple
-  lam_shams: { light: "#7b6000", dark: "#d4a800" }, // amber-gold (distinct)
+  lam_shams: { light: "#7b6000", dark: "#d4a800" }, // amber-gold
+
+  // ── Madd — 4 distinct shades of blue ─────────────────────────────────────
+  // Darker/stronger = longer/more obligatory
+  madd_2: { light: "#1a5276", dark: "#5dade2" }, // light blue  — 2 counts (natural)
+  madd_246: { light: "#1f618d", dark: "#2e86c1" }, // mid blue    — 2/4/6 variable
+  madd_munfasil: { light: "#1a4a7a", dark: "#1e8bc3" }, // blue        — separated 4-5
+  madd_muttasil: { light: "#154360", dark: "#1565c0" }, // deep blue   — connected 4-5 (obligatory)
+  madd_6: { light: "#0d2b4e", dark: "#0a3d91" }, // darkest     — 6 counts (most obligatory)
+
+  // Fallback for old 'madd' category (pre-patch backend)
+  madd: { light: "#1a5276", dark: "#5dade2" },
 };
 
 function catColor(cat: string, isDark: boolean): string {
