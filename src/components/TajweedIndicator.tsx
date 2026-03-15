@@ -125,33 +125,8 @@ const RULE_META: Record<
   },
 };
 
-// Portal tooltip
+// ── Portal tooltip ─────────────────────────────────────────────────────────────
 
-
-const RULE_PRIORITY: Record<string, number> = {
-  madd_6: 100,
-  madd_muttasil: 95,
-  madd_munfasil: 90,
-  madd_246: 80,
-  madd_2: 70,
-  ghunna: 60,
-  qalqalah: 50,
-  ikhfa: 40,
-  idgham: 30,
-  iqlab: 20,
-  lam_shams: 10,
-  madd: 5,
-};
-
-function pickPrimaryRule(rules: TajweedViolation[]): TajweedViolation | null {
-  if (!rules.length) return null;
-  const sorted = [...rules].sort((a, b) => {
-    const pa = RULE_PRIORITY[a.rule] ?? RULE_PRIORITY[a.sub_type] ?? 0;
-    const pb = RULE_PRIORITY[b.rule] ?? RULE_PRIORITY[b.sub_type] ?? 0;
-    return pb - pa;
-  });
-  return sorted[0] ?? null;
-}
 interface TooltipProps {
   status: WordTajweedStatus;
   isDark: boolean;
@@ -260,7 +235,17 @@ function TajweedTooltip({
         const meta = RULE_META[rule.rule] ?? RULE_META[rule.sub_type] ?? null;
         if (!meta) return null;
         const isViolation = !rule.correct;
-        const stateColor = isViolation ? "#f39c12" : "#2ecc71";
+        const isRuleUnverifiable = (rule as any).verifiable === false;
+        const isRuleBorderline =
+          !isViolation &&
+          isRuleUnverifiable === false &&
+          rule.confidence != null &&
+          rule.confidence < 0.6;
+        const stateColor = isViolation
+          ? "#f39c12"
+          : isRuleUnverifiable || isRuleBorderline
+            ? "#7f8c8d"
+            : "#2ecc71";
 
         return (
           <div
@@ -309,7 +294,13 @@ function TajweedTooltip({
                   padding: "1px 5px",
                 }}
               >
-                {isViolation ? "IMPROVE" : "GOOD"}
+                {isViolation
+                  ? "IMPROVE"
+                  : (rule as any).verifiable === false
+                    ? "NOTE"
+                    : rule.confidence != null && rule.confidence < 0.6
+                      ? "BORDERLINE"
+                      : "GOOD"}
               </span>
             </div>
 
@@ -319,26 +310,30 @@ function TajweedTooltip({
             </p>
 
             {/* Duration detail for madd */}
-            {(rule.rule.startsWith("madd") || rule.sub_type.startsWith("madd")) && rule.expected_duration != null && (
-              <div
-                style={{
-                  fontSize: 11,
-                  opacity: 0.65,
-                  marginBottom: 5,
-                  display: "flex",
-                  gap: 10,
-                }}
-              >
-                <span>
-                  Expected: ≥{Math.round(rule.expected_duration * 1000)}ms
-                </span>
-                {rule.actual_duration != null && (
-                  <span style={{ color: isViolation ? "#f39c12" : "#2ecc71" }}>
-                    Actual: {Math.round(rule.actual_duration * 1000)}ms
+            {rule.rule != null &&
+              rule.rule.startsWith("madd") &&
+              rule.expected_duration != null && (
+                <div
+                  style={{
+                    fontSize: 11,
+                    opacity: 0.65,
+                    marginBottom: 5,
+                    display: "flex",
+                    gap: 10,
+                  }}
+                >
+                  <span>
+                    Expected: ≥{Math.round(rule.expected_duration * 1000)}ms
                   </span>
-                )}
-              </div>
-            )}
+                  {rule.actual_duration != null && (
+                    <span
+                      style={{ color: isViolation ? "#f39c12" : "#2ecc71" }}
+                    >
+                      Actual: {Math.round(rule.actual_duration * 1000)}ms
+                    </span>
+                  )}
+                </div>
+              )}
 
             {/* Confidence bar */}
             {rule.confidence != null && (
@@ -406,16 +401,32 @@ export function TajweedBadge({ status, isDark }: TajweedBadgeProps) {
   if (status.rules.length === 0) return null;
 
   const hasViolation = status.has_violation;
+
+  // 3-state badge:
+  // AMBER  = has_violation (clearly too short)
+  // GREEN  = verified good (verifiable=true, correct=true, confidence > 0.5)
+  // GREY   = unverifiable (no timing data) or borderline (low confidence)
+  const primaryRule = status.rules[0];
+  const isUnverifiable = !primaryRule || !(primaryRule as any).verifiable;
+  const isBorderline =
+    !hasViolation &&
+    primaryRule &&
+    (primaryRule as any).verifiable &&
+    primaryRule.confidence != null &&
+    primaryRule.confidence < 0.6;
   const badgeColor = hasViolation
     ? isDark
       ? "#f39c12"
-      : "#e67e22"
-    : isDark
-      ? "#2ecc71"
-      : "#27ae60";
+      : "#e67e22" // amber — needs practice
+    : isUnverifiable || isBorderline
+      ? isDark
+        ? "#7f8c8d"
+        : "#95a5a6" // grey — no verdict
+      : isDark
+        ? "#2ecc71"
+        : "#27ae60"; // green — verified good
 
   // Build rule label for the badge
-  const primaryRule = pickPrimaryRule(status.rules);
   const meta = primaryRule
     ? (RULE_META[primaryRule.rule] ?? RULE_META[primaryRule.sub_type])
     : null;
@@ -464,7 +475,11 @@ export function TajweedBadge({ status, isDark }: TajweedBadgeProps) {
             flexShrink: 0,
           }}
         />
-        {hasViolation ? `${label} !` : label}
+        {hasViolation
+          ? `${label} ⚠`
+          : isUnverifiable || isBorderline
+            ? `${label} ·`
+            : label}
       </span>
 
       {visible && anchorRect && (
