@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+﻿import { useState, useEffect } from 'react';
 import { supabase } from '@/integrations/supabase/client';
 import { useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
@@ -46,8 +46,9 @@ const Auth = () => {
         if (error) throw error;
         toast({ title: 'Account Created', description: 'Please check your email to verify your account.' });
       }
-    } catch (err: any) {
-      toast({ title: 'Error', description: err.message, variant: 'destructive' });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Authentication failed";
+      toast({ title: 'Error', description: message, variant: 'destructive' });
     } finally {
       setLoading(false);
     }
@@ -67,7 +68,7 @@ const Auth = () => {
     <div className="min-h-screen bg-background flex items-center justify-center px-4">
       <div className="w-full max-w-md space-y-8">
         <div className="text-center space-y-2">
-          <h1 className="font-quran text-4xl text-gold glow-gold">تلاوة</h1>
+          <h1 className="font-quran text-4xl text-gold glow-gold">ØªÙ„Ø§ÙˆØ©</h1>
           <p className="text-muted-foreground">Quran Recitation Trainer</p>
         </div>
 

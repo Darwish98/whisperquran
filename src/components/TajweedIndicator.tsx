@@ -1,4 +1,4 @@
-/**
+﻿/**
  * TajweedIndicator.tsx
  *
  * Production-ready tajweed feedback badges.
@@ -125,8 +125,33 @@ const RULE_META: Record<
   },
 };
 
-// ── Portal tooltip ─────────────────────────────────────────────────────────────
+// Portal tooltip
 
+
+const RULE_PRIORITY: Record<string, number> = {
+  madd_6: 100,
+  madd_muttasil: 95,
+  madd_munfasil: 90,
+  madd_246: 80,
+  madd_2: 70,
+  ghunna: 60,
+  qalqalah: 50,
+  ikhfa: 40,
+  idgham: 30,
+  iqlab: 20,
+  lam_shams: 10,
+  madd: 5,
+};
+
+function pickPrimaryRule(rules: TajweedViolation[]): TajweedViolation | null {
+  if (!rules.length) return null;
+  const sorted = [...rules].sort((a, b) => {
+    const pa = RULE_PRIORITY[a.rule] ?? RULE_PRIORITY[a.sub_type] ?? 0;
+    const pb = RULE_PRIORITY[b.rule] ?? RULE_PRIORITY[b.sub_type] ?? 0;
+    return pb - pa;
+  });
+  return sorted[0] ?? null;
+}
 interface TooltipProps {
   status: WordTajweedStatus;
   isDark: boolean;
@@ -294,7 +319,7 @@ function TajweedTooltip({
             </p>
 
             {/* Duration detail for madd */}
-            {rule.rule === "madd" && rule.expected_duration != null && (
+            {(rule.rule.startsWith("madd") || rule.sub_type.startsWith("madd")) && rule.expected_duration != null && (
               <div
                 style={{
                   fontSize: 11,
@@ -390,7 +415,7 @@ export function TajweedBadge({ status, isDark }: TajweedBadgeProps) {
       : "#27ae60";
 
   // Build rule label for the badge
-  const primaryRule = status.rules[0];
+  const primaryRule = pickPrimaryRule(status.rules);
   const meta = primaryRule
     ? (RULE_META[primaryRule.rule] ?? RULE_META[primaryRule.sub_type])
     : null;
@@ -439,7 +464,7 @@ export function TajweedBadge({ status, isDark }: TajweedBadgeProps) {
             flexShrink: 0,
           }}
         />
-        {hasViolation ? `${label} ⚠` : label}
+        {hasViolation ? `${label} !` : label}
       </span>
 
       {visible && anchorRect && (

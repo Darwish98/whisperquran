@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useEffect } from "react";
+﻿import { useState, useCallback, useRef, useEffect } from "react";
 import {
   fetchSurahText,
   fetchSurahList,
@@ -136,6 +136,7 @@ export default function Index() {
     addAudioChunk,
     clearBuffer,
     getBufferedAudio,
+    resetTajweedStatuses,
   } = useTajweedAnalysis();
 
   // Track which ayah we're buffering audio for
@@ -167,6 +168,8 @@ export default function Index() {
       setLastHeard("");
       setPhoneticInfo(null);
       clearBuffer();
+      ayahWordTimingsRef.current.clear();
+      resetTajweedStatuses();
 
       try {
         const w = await fetchSurahText(num);
@@ -219,7 +222,7 @@ export default function Index() {
         setLoading(false);
       }
     },
-    [isListening, stop, toast, clearBuffer],
+    [isListening, stop, toast, clearBuffer, resetTajweedStatuses],
   );
 
   // Load default surah on mount
@@ -597,6 +600,8 @@ export default function Index() {
     setLastHeard("");
     setPhoneticInfo(null);
     clearBuffer();
+    ayahWordTimingsRef.current.clear();
+    resetTajweedStatuses();
     if (words.length) {
       setCurrentIndex(0);
       currentIndexRef.current = 0;
@@ -606,7 +611,7 @@ export default function Index() {
       );
       setWordStatuses(statuses);
     }
-  }, [stop, words, clearBuffer, resetPosition]);
+  }, [stop, words, clearBuffer, resetPosition, resetTajweedStatuses]);
 
   // ── Render ────────────────────────────────────────────────────────────────
 
@@ -764,7 +769,7 @@ export default function Index() {
       {/* ── Status bar ── */}
       {isListening && (
         <div className="px-4 py-1 text-center text-xs font-sans border-b shrink-0 bg-emerald-950/40 border-emerald-800/30 text-emerald-400">
-          🟢 FastConformer CTC · {reciter.riwaya} · {reciter.name}
+          🟢 FastConformer RNNT · {reciter.riwaya} · {reciter.name}
         </div>
       )}
 

@@ -1,4 +1,4 @@
-/**
+﻿/**
  * useAzureSpeech.ts — Phase 2
  *
  * Streams raw PCM16 mic audio to the FastConformer CTC backend via WebSocket.
@@ -322,17 +322,19 @@ export function useAzureSpeech(): UseAzureSpeechReturn {
             autoGainControl: true,
           },
         });
-      } catch (err: any) {
-        if (err.name === "NotAllowedError") {
+      } catch (err: unknown) {
+        const name = err instanceof Error ? err.name : "UnknownError";
+        const message = err instanceof Error ? err.message : "Unknown microphone error";
+        if (name === "NotAllowedError") {
           setError(
             "Microphone permission denied. Please allow microphone access in your browser settings.",
           );
-        } else if (err.name === "NotFoundError") {
+        } else if (name === "NotFoundError") {
           setError(
             "No microphone found. Please connect a microphone and try again.",
           );
         } else {
-          setError(`Microphone error: ${err.message}`);
+          setError(`Microphone error: ${message}`);
         }
         cleanup();
         return;

@@ -1,10 +1,9 @@
-/**
+﻿/**
  * useTajweedAnalysis.ts
  *
- * Key fix in this version:
- *   - analyzeAyah now accepts globalIndexOffset so the returned wordStatuses
- *     map is keyed by GLOBAL word index, not per-ayah word_index.
- *   - QuranDisplay looks up by globalIndex — this makes them match.
+ * Key behavior:
+ *   - Stores statuses keyed by GLOBAL word index so QuranDisplay can map directly.
+ *   - Supports reset between surahs/sessions to avoid stale badges.
  */
 
 import { useState, useRef, useCallback } from "react";
@@ -40,8 +39,8 @@ export interface TajweedResult {
 }
 
 export interface WordTajweedStatus {
-  word_index: number; // per-ayah index (from server)
-  global_index: number; // global surah index (for QuranDisplay lookup)
+  word_index: number;
+  global_index: number;
   rules: TajweedViolation[];
   has_violation: boolean;
   worst_rule?: string;
@@ -50,22 +49,49 @@ export interface WordTajweedStatus {
 interface UseTajweedAnalysisReturn {
   isAnalyzing: boolean;
   lastResult: TajweedResult | null;
-  /** Keyed by GLOBAL word index — matches word.globalIndex in QuranDisplay */
   wordStatuses: Map<number, WordTajweedStatus>;
   error: string | null;
   analyzeAyah: (
     audioChunks: ArrayBuffer[],
     ayahWords: string[],
     wordTimings?: WordTimingInput[],
-    globalIndexOffset?: number, // first word's globalIndex in this ayah
+    globalIndexOffset?: number,
   ) => Promise<TajweedResult | null>;
   addAudioChunk: (chunk: ArrayBuffer) => void;
   getBufferedAudio: () => ArrayBuffer[];
   clearBuffer: () => void;
+  resetTajweedStatuses: () => void;
   overallScore: number | null;
 }
 
 const API_BASE = import.meta.env.VITE_BACKEND_URL || "http://localhost:8000";
+
+const RULE_PRIORITY: Record<string, number> = {
+  madd_6: 100,
+  madd_muttasil: 95,
+  madd_munfasil: 90,
+  madd_246: 80,
+  madd_2: 70,
+  ghunnah: 60,
+  qalqalah: 50,
+  ikhfa: 40,
+  ikhfa_shafawi: 40,
+  idgham_ghunnah: 35,
+  idgham_no_ghunnah: 34,
+  idgham_shafawi: 33,
+  iqlab: 30,
+  lam_shams: 20,
+  lam_shamsiyyah: 20,
+  madd: 10,
+};
+
+function rulePriority(rule: TajweedViolation): number {
+  return (
+    RULE_PRIORITY[rule.rule] ??
+    RULE_PRIORITY[rule.sub_type] ??
+    0
+  );
+}
 
 export function useTajweedAnalysis(): UseTajweedAnalysisReturn {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -90,6 +116,13 @@ export function useTajweedAnalysis(): UseTajweedAnalysisReturn {
     audioBufferRef.current = [];
   }, []);
 
+  const resetTajweedStatuses = useCallback(() => {
+    setWordStatuses(new Map());
+    setLastResult(null);
+    setOverallScore(null);
+    setError(null);
+  }, []);
+
   const analyzeAyah = useCallback(
     async (
       audioChunks: ArrayBuffer[],
@@ -103,7 +136,6 @@ export function useTajweedAnalysis(): UseTajweedAnalysisReturn {
       setError(null);
 
       try {
-        // Merge audio chunks
         const totalLen = audioChunks.reduce((s, c) => s + c.byteLength, 0);
         const merged = new Uint8Array(totalLen);
         let off = 0;
@@ -112,10 +144,10 @@ export function useTajweedAnalysis(): UseTajweedAnalysisReturn {
           off += chunk.byteLength;
         }
 
-        // Base64 encode
         let binary = "";
-        for (let i = 0; i < merged.byteLength; i++)
+        for (let i = 0; i < merged.byteLength; i += 1) {
           binary += String.fromCharCode(merged[i]);
+        }
         const b64 = btoa(binary);
 
         const resp = await fetch(`${API_BASE}/analyze-tajweed`, {
@@ -128,15 +160,14 @@ export function useTajweedAnalysis(): UseTajweedAnalysisReturn {
           }),
         });
 
-        if (!resp.ok)
+        if (!resp.ok) {
           throw new Error(`Tajweed analysis failed: ${resp.status}`);
+        }
 
         const result: TajweedResult = await resp.json();
         setLastResult(result);
         setOverallScore(result.score);
 
-        // Build per-word status map keyed by GLOBAL index
-        // word_index from server is per-ayah (0, 1, 2...) → add offset
         setWordStatuses((prev) => {
           const next = new Map(prev);
 
@@ -148,14 +179,18 @@ export function useTajweedAnalysis(): UseTajweedAnalysisReturn {
               rules: [],
               has_violation: false,
             };
-            // Avoid duplicates
+
             if (!ex.rules.find((r) => r.sub_type === entry.sub_type)) {
               ex.rules.push(entry);
             }
+
+            ex.rules.sort((a, b) => rulePriority(b) - rulePriority(a));
+
             if (!entry.correct) {
               ex.has_violation = true;
-              ex.worst_rule = entry.rule;
+              ex.worst_rule = ex.rules[0]?.rule;
             }
+
             next.set(globalIdx, { ...ex });
           }
 
@@ -184,6 +219,7 @@ export function useTajweedAnalysis(): UseTajweedAnalysisReturn {
     addAudioChunk,
     getBufferedAudio,
     clearBuffer,
+    resetTajweedStatuses,
     overallScore,
   };
 }
