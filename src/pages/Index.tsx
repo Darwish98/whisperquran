@@ -25,7 +25,6 @@ import {
   type WordTimingInput,
 } from "@/hooks/useTajweedAnalysis";
 import { TajweedScoreBar } from "@/components/TajweedIndicator";
-// MicPermission mirrors the type expected by RecitationControls
 type MicPermission = "idle" | "requesting" | "granted" | "denied" | "error";
 import { useAuth } from "@/hooks/useAuth";
 import { useUserProgress } from "@/hooks/useUserProgress";
@@ -62,7 +61,6 @@ interface WordStatus {
 
 const MAX_RETRIES_BEFORE_HELP = 3;
 
-// Group reciters by riwaya for the dropdown headings
 const RECITERS_BY_RIWAYA = RECITERS.reduce<Record<string, Reciter[]>>(
   (acc, r) => {
     (acc[r.riwaya] ??= []).push(r);
@@ -101,12 +99,9 @@ export default function Index() {
   useEffect(() => {
     reciterRef.current = reciter;
   }, [reciter]);
-
   useEffect(() => {
     audioHelpRef.current = audioHelp;
   }, [audioHelp]);
-
-  // Apply dark/light mode to document
   useEffect(() => {
     document.documentElement.classList.toggle("light", !isDark);
   }, [isDark]);
@@ -126,7 +121,6 @@ export default function Index() {
   const { toast } = useToast();
   const navigate = useNavigate();
 
-  // ── Tajweed analysis hook ─────────────────────────────────────────────────
   const {
     isAnalyzing: isTajweedAnalyzing,
     wordStatuses: tajweedStatuses,
@@ -139,7 +133,6 @@ export default function Index() {
     resetTajweedStatuses,
   } = useTajweedAnalysis();
 
-  // Track which ayah we're buffering audio for
   const currentAyahAudioRef = useRef<{
     ayahNumber: number;
     chunks: ArrayBuffer[];
@@ -153,12 +146,10 @@ export default function Index() {
     words.length > 0 ? Math.round((completedWords / words.length) * 100) : 0;
   const currentSurah = surahList.find((s) => s.number === selectedSurah);
 
-  // ── Load surah list once ──────────────────────────────────────────────────
   useEffect(() => {
     fetchSurahList().then(setSurahList).catch(console.error);
   }, []);
 
-  // ── Load surah text ───────────────────────────────────────────────────────
   const handleSurahSelect = useCallback(
     async (num: number) => {
       if (isListening) stop();
@@ -173,13 +164,11 @@ export default function Index() {
 
       try {
         const w = await fetchSurahText(num);
-        // Fetch tajweed annotations
         try {
           const API_BASE =
             import.meta.env.VITE_BACKEND_URL || "http://localhost:8000";
           const tajRes = await fetch(`${API_BASE}/tajweed/surah/${num}`);
           const tajData = await tajRes.json();
-          // Store as a Map: globalIndex → rules array
           const tajMap = new Map<number, ServerRule[]>();
           for (const w of tajData.words || []) {
             tajMap.set(w.index, w.rules);
@@ -203,7 +192,6 @@ export default function Index() {
         );
         setWordStatuses(statuses);
 
-        // Preload audio for first few ayahs
         const firstGlobalAyahs = [
           ...new Set(w.slice(0, 30).map((word) => word.globalAyahNumber)),
         ];
@@ -225,13 +213,11 @@ export default function Index() {
     [isListening, stop, toast, clearBuffer, resetTajweedStatuses],
   );
 
-  // Load default surah on mount
   useEffect(() => {
     handleSurahSelect(1);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ── Helper: trigger tajweed analysis when an ayah is complete ─────────────
   const triggerTajweedAnalysis = useCallback(
     (completedAyahNumber: number) => {
       const ayahWords = wordsRef.current.filter(
@@ -240,17 +226,11 @@ export default function Index() {
       if (ayahWords.length === 0) return;
 
       const audioChunks = getBufferedAudio();
-
-      // Phase 5: grab accumulated word timings for this ayah then clear
       const wordTimings =
         ayahWordTimingsRef.current.get(completedAyahNumber) ?? [];
       ayahWordTimingsRef.current.delete(completedAyahNumber);
-
-      // FIX: pass the global index of the first word in this ayah
-      // so useTajweedAnalysis can store results by globalIndex
       const globalIndexOffset = ayahWords[0]?.globalIndex ?? 0;
 
-      // Run analysis in background (non-blocking)
       analyzeAyah(
         audioChunks,
         ayahWords.map((aw) => aw.text),
@@ -260,7 +240,7 @@ export default function Index() {
     },
     [analyzeAyah, getBufferedAudio],
   );
-  // ── Transcription handler ─────────────────────────────────────────────────
+
   const handleTranscription = useCallback(
     (result: TranscriptionResult) => {
       if (!result.isFinal) {
@@ -283,11 +263,12 @@ export default function Index() {
 
       wordsAttemptedRef.current++;
 
-      // ── Phase 2: Use server-side match results if available ────────────
       if (result.match) {
         const match = result.match;
+
+        // ── FIX: store timings for ALL words with durationMs, not just matched ──
         for (const wm of match.words) {
-          if (wm.matched && wm.durationMs != null) {
+          if (wm.durationMs != null) {
             const ayahTimings = ayahWordTimingsRef.current.get(wm.ayah) ?? [];
             ayahTimings.push({
               word_index: wm.wordInAyah,
@@ -296,6 +277,7 @@ export default function Index() {
             ayahWordTimingsRef.current.set(wm.ayah, ayahTimings);
           }
         }
+
         setWordStatuses((prev) => {
           const next = new Map(prev);
 
@@ -304,23 +286,17 @@ export default function Index() {
               next.set(key, { ...val, state: "correct" });
           }
 
-          // Apply server-side word match results
           for (const wm of match.words) {
             if (wm.matched) {
               next.set(wm.index, { state: "correct", retries: 0 });
             } else if (wm.spoken) {
-              // Failed match — mark as incorrect with retry count
-              next.set(wm.index, {
-                state: "incorrect",
-                retries: wm.retries,
-              });
+              next.set(wm.index, { state: "incorrect", retries: wm.retries });
             }
           }
 
           const newIndex = match.position;
           const prevAyah = w[idx]?.ayahNumber;
 
-          // Update current position
           currentIndexRef.current = newIndex;
           setCurrentIndex(newIndex);
 
@@ -331,13 +307,11 @@ export default function Index() {
             });
           }
 
-          // If we crossed an ayah boundary, trigger tajweed analysis
           const newAyah = w[newIndex]?.ayahNumber;
           if (prevAyah && newAyah && prevAyah !== newAyah) {
             triggerTajweedAnalysis(prevAyah);
           }
 
-          // Preload upcoming ayah audio
           if (newIndex < w.length) {
             const nextGlobalAyahs = [
               ...new Set(
@@ -350,15 +324,10 @@ export default function Index() {
             preloadWordAudio(urls);
           }
 
-          // Check for surah completion
           if (match.complete || newIndex >= w.length) {
             if (prevAyah) triggerTajweedAnalysis(prevAyah);
-
             stop();
-            toast({
-              title: "ماشاء الله",
-              description: "Surah complete! 🎉",
-            });
+            toast({ title: "ماشاء الله", description: "Surah complete! 🎉" });
             if (sessionStartRef.current > 0) {
               const dur = Math.floor(
                 (Date.now() - sessionStartRef.current) / 1000,
@@ -372,7 +341,6 @@ export default function Index() {
             }
           }
 
-          // Handle audio help for failed words
           if (match.wordsMatched === 0 && match.words.length > 0) {
             const failedWord = match.words[0];
             if (
@@ -395,7 +363,6 @@ export default function Index() {
               }
             }
 
-            // Revert incorrect state back to current after delay
             setTimeout(() => {
               setWordStatuses((p) => {
                 const n = new Map(p);
@@ -414,7 +381,7 @@ export default function Index() {
         return;
       }
 
-      // ── Fallback: client-side matching (legacy, no server match) ───────
+      // ── Fallback: client-side matching ───────────────────────────────────
       if (result.text.trim().length < 3) return;
 
       const expectedSlice = w.slice(idx, idx + 10);
@@ -457,10 +424,7 @@ export default function Index() {
           if (newIndex >= w.length) {
             if (prevAyah) triggerTajweedAnalysis(prevAyah);
             stop();
-            toast({
-              title: "ماشاء الله",
-              description: "Surah complete! 🎉",
-            });
+            toast({ title: "ماشاء الله", description: "Surah complete! 🎉" });
             if (sessionStartRef.current > 0) {
               const dur = Math.floor(
                 (Date.now() - sessionStartRef.current) / 1000,
@@ -509,11 +473,8 @@ export default function Index() {
     [stop, toast, updateRefText, saveRecitationHistory, triggerTajweedAnalysis],
   );
 
-  // ── Start / Stop / Reset ──────────────────────────────────────────────────
   const handleStart = useCallback(() => {
     if (!words.length) return;
-
-    // SECURITY: Require authenticated user before allowing recitation
     if (!user) {
       toast({
         title: "Login required",
@@ -523,11 +484,10 @@ export default function Index() {
       navigate("/auth");
       return;
     }
-
-    // CRITICAL: unlockAudio must be called synchronously inside a click handler
     unlockAudio();
     clearBuffer();
-
+    ayahWordTimingsRef.current.clear();
+    resetTajweedStatuses();
     setMicPermission("requesting");
     sessionStartRef.current = Date.now();
     wordsAttemptedRef.current = 0;
@@ -548,6 +508,7 @@ export default function Index() {
     clearBuffer,
     selectedSurah,
     addAudioChunk,
+    resetTajweedStatuses,
   ]);
 
   const handleStop = useCallback(() => {
@@ -556,14 +517,11 @@ export default function Index() {
     setLastHeard("");
     setPhoneticInfo(null);
     clearBuffer();
-
-    // Trigger tajweed analysis for whatever ayah we were on
     const w = wordsRef.current;
     const idx = currentIndexRef.current;
     if (w.length && idx < w.length) {
       triggerTajweedAnalysis(w[idx].ayahNumber);
     }
-
     if (user && sessionStartRef.current > 0) {
       const dur = Math.floor((Date.now() - sessionStartRef.current) / 1000);
       saveRecitationHistory(
@@ -613,8 +571,6 @@ export default function Index() {
     }
   }, [stop, words, clearBuffer, resetPosition, resetTajweedStatuses]);
 
-  // ── Render ────────────────────────────────────────────────────────────────
-
   return (
     <div
       className="min-h-[100dvh] bg-background flex flex-col transition-colors duration-300"
@@ -623,7 +579,6 @@ export default function Index() {
       {/* ── Sticky header ── */}
       <header className="border-b border-border/50 px-4 py-3 sticky top-0 z-40 bg-background/90 backdrop-blur-sm shrink-0">
         <div className="max-w-5xl mx-auto flex items-center justify-between gap-2 flex-wrap">
-          {/* Logo */}
           <div className="flex items-center gap-2 shrink-0">
             <h1 className="font-quran text-2xl text-gold glow-gold">تلاوة</h1>
             <span className="text-xs text-muted-foreground hidden sm:block">
@@ -631,16 +586,13 @@ export default function Index() {
             </span>
           </div>
 
-          {/* Controls row */}
           <div className="flex items-center gap-2 flex-wrap justify-end">
-            {/* Surah selector */}
             <SurahSelector
               selectedSurah={selectedSurah}
               onSelect={handleSurahSelect}
               disabled={isListening}
             />
 
-            {/* Reciter / Riwaya selector */}
             <Select
               value={reciter.id}
               onValueChange={(id) =>
@@ -685,14 +637,13 @@ export default function Index() {
               </SelectContent>
             </Select>
 
-            {/* Audio-help toggle */}
             <Button
               variant={audioHelp ? "default" : "outline"}
               size="icon"
               className="shrink-0 border-border/50"
               title={
                 audioHelp
-                  ? "Audio help ON — plays recitation after 3 wrong attempts. Click to disable."
+                  ? "Audio help ON — click to disable."
                   : "Audio help OFF — click to enable."
               }
               onClick={() => {
@@ -707,15 +658,12 @@ export default function Index() {
               )}
             </Button>
 
-            {/* Eye: hide / show upcoming ayahs */}
             <Button
               variant="outline"
               size="icon"
               className="shrink-0 border-border/50"
               title={
-                showPending
-                  ? "Hide upcoming ayahs (show only numbers)"
-                  : "Show upcoming ayahs"
+                showPending ? "Hide upcoming ayahs" : "Show upcoming ayahs"
               }
               onClick={() => setShowPending((p) => !p)}
             >
@@ -726,7 +674,6 @@ export default function Index() {
               )}
             </Button>
 
-            {/* Dark / light */}
             <Button
               variant="outline"
               size="icon"
@@ -741,7 +688,6 @@ export default function Index() {
               )}
             </Button>
 
-            {/* Auth */}
             {user ? (
               <div className="flex items-center gap-1.5">
                 <span className="text-xs text-muted-foreground hidden md:block truncate max-w-[120px]">
@@ -766,14 +712,12 @@ export default function Index() {
         </div>
       </header>
 
-      {/* ── Status bar ── */}
       {isListening && (
         <div className="px-4 py-1 text-center text-xs font-sans border-b shrink-0 bg-emerald-950/40 border-emerald-800/30 text-emerald-400">
           🟢 FastConformer RNNT · {reciter.riwaya} · {reciter.name}
         </div>
       )}
 
-      {/* ── Quran display ── */}
       <main className="flex-1 overflow-y-auto px-4 py-4">
         <div className="max-w-5xl mx-auto">
           {loading ? (
@@ -796,7 +740,6 @@ export default function Index() {
         </div>
       </main>
 
-      {/* ── Controls — below the Quran, inside the scroll flow ── */}
       <div className="shrink-0 px-4 py-6 border-t border-border/30">
         <div className="max-w-5xl mx-auto flex flex-col items-center gap-3">
           <RecitationControls
@@ -814,7 +757,6 @@ export default function Index() {
             hasWords={words.length > 0}
           />
 
-          {/* Tajweed score display */}
           {tajweedResult && (
             <TajweedScoreBar
               score={tajweedScore}
