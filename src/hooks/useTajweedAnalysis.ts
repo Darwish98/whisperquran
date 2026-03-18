@@ -1,4 +1,4 @@
-﻿/**
+/**
  * useTajweedAnalysis.ts
  *
  * Key fix in this version:
@@ -18,7 +18,7 @@ export interface TajweedViolation {
   word_index: number;
   correct: boolean;
   confidence: number;
-  verifiable: boolean; // true = timing data present and verdict is real
+  verifiable: boolean;        // true = timing data present and verdict is real
   expected_duration?: number;
   actual_duration?: number;
   timestamp?: number;
@@ -28,6 +28,7 @@ export interface TajweedViolation {
 export interface WordTimingInput {
   word_index: number;
   duration_ms: number;
+  nemo_duration_ms?: number;  // raw NeMo duration for VAD calibration
 }
 
 export interface TajweedResult {
@@ -41,8 +42,8 @@ export interface TajweedResult {
 }
 
 export interface WordTajweedStatus {
-  word_index: number; // per-ayah index (from server)
-  global_index: number; // global surah index (for QuranDisplay lookup)
+  word_index: number;       // per-ayah index (from server)
+  global_index: number;     // global surah index (for QuranDisplay lookup)
   rules: TajweedViolation[];
   has_violation: boolean;
   worst_rule?: string;
@@ -73,9 +74,7 @@ const API_BASE = import.meta.env.VITE_BACKEND_URL || "http://localhost:8000";
 export function useTajweedAnalysis(): UseTajweedAnalysisReturn {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [lastResult, setLastResult] = useState<TajweedResult | null>(null);
-  const [wordStatuses, setWordStatuses] = useState<
-    Map<number, WordTajweedStatus>
-  >(new Map());
+  const [wordStatuses, setWordStatuses] = useState<Map<number, WordTajweedStatus>>(new Map());
   const [error, setError] = useState<string | null>(null);
   const [overallScore, setOverallScore] = useState<number | null>(null);
   const audioBufferRef = useRef<ArrayBuffer[]>([]);
@@ -84,14 +83,9 @@ export function useTajweedAnalysis(): UseTajweedAnalysisReturn {
     audioBufferRef.current.push(chunk);
   }, []);
 
-  const getBufferedAudio = useCallback(
-    (): ArrayBuffer[] => [...audioBufferRef.current],
-    [],
-  );
+  const getBufferedAudio = useCallback((): ArrayBuffer[] => [...audioBufferRef.current], []);
 
-  const clearBuffer = useCallback(() => {
-    audioBufferRef.current = [];
-  }, []);
+  const clearBuffer = useCallback(() => { audioBufferRef.current = []; }, []);
 
   const analyzeAyah = useCallback(
     async (
@@ -131,8 +125,7 @@ export function useTajweedAnalysis(): UseTajweedAnalysisReturn {
           }),
         });
 
-        if (!resp.ok)
-          throw new Error(`Tajweed analysis failed: ${resp.status}`);
+        if (!resp.ok) throw new Error(`Tajweed analysis failed: ${resp.status}`);
 
         const result: TajweedResult = await resp.json();
         setLastResult(result);
@@ -152,7 +145,7 @@ export function useTajweedAnalysis(): UseTajweedAnalysisReturn {
               has_violation: false,
             };
             // Avoid duplicates
-            if (!ex.rules.find((r) => r.sub_type === entry.sub_type)) {
+            if (!ex.rules.find(r => r.sub_type === entry.sub_type)) {
               ex.rules.push(entry);
             }
             if (!entry.correct) {
@@ -167,8 +160,7 @@ export function useTajweedAnalysis(): UseTajweedAnalysisReturn {
 
         return result;
       } catch (err: unknown) {
-        const msg =
-          err instanceof Error ? err.message : "Tajweed analysis failed";
+        const msg = err instanceof Error ? err.message : "Tajweed analysis failed";
         setError(msg);
         return null;
       } finally {
