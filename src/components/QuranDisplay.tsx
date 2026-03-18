@@ -14,7 +14,104 @@
 import { useRef, useState, useEffect } from "react";
 import { cn } from "@/lib/utils";
 import { type QuranWord } from "@/lib/quranApi";
-import { TAJWEED_RULES, type TajweedInfo } from "@/lib/tajweedUtils";
+interface TajweedInfo {
+  rule: string;
+  color: string;
+  label: string;
+  arabic: string;
+  description: string;
+}
+
+const TAJWEED_RULES: Record<string, TajweedInfo> = {
+  ghunna: {
+    rule: "ghunna",
+    color: "#e74c3c",
+    label: "Ghunna",
+    arabic: "غنة",
+    description:
+      "Nasalisation — a humming sound held for 2 counts through the nose.",
+  },
+  qalqalah: {
+    rule: "qalqalah",
+    color: "#2ecc71",
+    label: "Qalqalah",
+    arabic: "قلقلة",
+    description:
+      "Echoing bounce — a slight vibration when these letters are saakin: ق ط ب ج د.",
+  },
+  madd: {
+    rule: "madd",
+    color: "#5dade2",
+    label: "Madd",
+    arabic: "مد",
+    description: "Prolongation — extending the vowel sound.",
+  },
+  madd_2: {
+    rule: "madd_2",
+    color: "#5dade2",
+    label: "Madd 2",
+    arabic: "مد طبيعي",
+    description: "Natural madd — 2 counts.",
+  },
+  madd_246: {
+    rule: "madd_246",
+    color: "#2e86c1",
+    label: "Madd ʿĀriḍ",
+    arabic: "مد عارض",
+    description: "Variable madd at waqf — 2, 4, or 6 counts.",
+  },
+  madd_munfasil: {
+    rule: "madd_munfasil",
+    color: "#1e8bc3",
+    label: "Madd Munfaṣil",
+    arabic: "مد منفصل",
+    description: "Separated madd — 4–5 counts before hamza in next word.",
+  },
+  madd_muttasil: {
+    rule: "madd_muttasil",
+    color: "#1565c0",
+    label: "Madd Muttaṣil",
+    arabic: "مد متصل",
+    description: "Connected madd — 4–5 counts, hamza follows in same word.",
+  },
+  madd_6: {
+    rule: "madd_6",
+    color: "#0a3d91",
+    label: "Madd Lāzim",
+    arabic: "مد لازم",
+    description: "Obligatory madd — exactly 6 counts.",
+  },
+  ikhfa_shafawi: {
+    rule: "ikhfa_shafawi",
+    color: "#e67e22",
+    label: "Ikhfa Shafawi",
+    arabic: "إخفاء شفوي",
+    description:
+      "Labial concealment — mim sakin before ب, lips slightly parted.",
+  },
+  idgham_bila: {
+    rule: "idgham_bila",
+    color: "#1abc9c",
+    label: "Idgham Bila Ghunna",
+    arabic: "إدغام بلا غنة",
+    description: "Merging without nasalisation — nun sakin before ل or ر.",
+  },
+  iqlab: {
+    rule: "iqlab",
+    color: "#a569bd",
+    label: "Iqlab",
+    arabic: "إقلاب",
+    description: "Conversion — nun sakin before ب changes to mim.",
+  },
+  lam_shams: {
+    rule: "lam_shams",
+    color: "#d4a800",
+    label: "Lam Shams",
+    arabic: "لام شمسية",
+    description:
+      "Solar lam — lam is assimilated into the following sun letter.",
+  },
+};
 import {
   Info,
   X,
