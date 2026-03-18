@@ -32,35 +32,35 @@ import * as ort from "onnxruntime-web";
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export interface WordTiming {
-  word:         string;
-  startMs:      number;
-  endMs:        number;
-  durationMs:   number;
+  word: string;
+  startMs: number;
+  endMs: number;
+  durationMs: number;
   encoderFrame: number;
 }
 
 export interface LocalASRResult {
-  text:    string;
+  text: string;
   isFinal: boolean;
   timings: WordTiming[];
 }
 
 export interface StartOptions {
-  surah?:        number;
-  refText?:      string;
+  surah?: number;
+  refText?: string;
   onAudioChunk?: (chunk: ArrayBuffer) => void;
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const SAMPLE_RATE  = 16000;
-const N_MELS       = 80;
-const CHUNK_MS     = 2000;
+const SAMPLE_RATE = 16000;
+const N_MELS = 80;
+const CHUNK_MS = 2000;
 const CHUNK_SAMPLES = (CHUNK_MS / 1000) * SAMPLE_RATE; // 32000
-const HOP_LENGTH   = 160;   // 10ms at 16kHz
-const WIN_LENGTH   = 400;   // 25ms at 16kHz
-const N_FFT        = 512;
-const MS_PER_STEP  = 80.0;  // FastConformer PCD: 8x subsampling × 10ms
+const HOP_LENGTH = 160; // 10ms at 16kHz
+const WIN_LENGTH = 400; // 25ms at 16kHz
+const N_FFT = 512;
+const MS_PER_STEP = 80.0; // FastConformer PCD: 8x subsampling × 10ms
 
 // Blank token is the last vocab entry (vocab_size = 1024, blank = 1024)
 let BLANK_ID = 1024;
@@ -69,7 +69,8 @@ let BLANK_ID = 1024;
 
 function hanningWindow(n: number): Float32Array {
   const w = new Float32Array(n);
-  for (let i = 0; i < n; i++) w[i] = 0.5 * (1 - Math.cos(2 * Math.PI * i / (n - 1)));
+  for (let i = 0; i < n; i++)
+    w[i] = 0.5 * (1 - Math.cos((2 * Math.PI * i) / (n - 1)));
   return w;
 }
 
@@ -87,21 +88,28 @@ function rfft(x: Float32Array): { re: Float32Array; im: Float32Array } {
     let bit = n >> 1;
     for (; j & bit; bit >>= 1) j ^= bit;
     j ^= bit;
-    if (i < j) { [re[i], re[j]] = [re[j], re[i]]; }
+    if (i < j) {
+      [re[i], re[j]] = [re[j], re[i]];
+    }
   }
   // Butterfly
   for (let len = 2; len <= n; len <<= 1) {
-    const ang = -2 * Math.PI / len;
-    const wRe = Math.cos(ang), wIm = Math.sin(ang);
+    const ang = (-2 * Math.PI) / len;
+    const wRe = Math.cos(ang),
+      wIm = Math.sin(ang);
     for (let i = 0; i < n; i += len) {
-      let cRe = 1, cIm = 0;
+      let cRe = 1,
+        cIm = 0;
       for (let k = 0; k < len >> 1; k++) {
-        const uR = re[i+k], uI = im[i+k];
-        const vR = re[i+k+len/2]*cRe - im[i+k+len/2]*cIm;
-        const vI = re[i+k+len/2]*cIm + im[i+k+len/2]*cRe;
-        re[i+k] = uR+vR; im[i+k] = uI+vI;
-        re[i+k+len/2] = uR-vR; im[i+k+len/2] = uI-vI;
-        [cRe, cIm] = [cRe*wRe - cIm*wIm, cRe*wIm + cIm*wRe];
+        const uR = re[i + k],
+          uI = im[i + k];
+        const vR = re[i + k + len / 2] * cRe - im[i + k + len / 2] * cIm;
+        const vI = re[i + k + len / 2] * cIm + im[i + k + len / 2] * cRe;
+        re[i + k] = uR + vR;
+        im[i + k] = uI + vI;
+        re[i + k + len / 2] = uR - vR;
+        im[i + k + len / 2] = uI - vI;
+        [cRe, cIm] = [cRe * wRe - cIm * wIm, cRe * wIm + cIm * wRe];
       }
     }
   }
@@ -109,20 +117,29 @@ function rfft(x: Float32Array): { re: Float32Array; im: Float32Array } {
 }
 
 /** Build HTK mel filterbank: [n_mels, n_fft/2+1] flattened row-major. */
-function buildMelFilters(nMels: number, nFft: number, sr: number): Float32Array {
+function buildMelFilters(
+  nMels: number,
+  nFft: number,
+  sr: number,
+): Float32Array {
   const hzMel = (h: number) => 2595 * Math.log10(1 + h / 700);
-  const melHz  = (m: number) => 700 * (10 ** (m / 2595) - 1);
-  const nFreqs  = nFft / 2 + 1;
-  const melMin  = hzMel(0), melMax = hzMel(sr / 2);
-  const step    = (melMax - melMin) / (nMels + 1);
-  const pts     = Float32Array.from({ length: nMels + 2 }, (_, i) => melHz(melMin + i * step));
-  const bins    = Float32Array.from({ length: nFreqs }, (_, k) => k * sr / nFft);
-  const F       = new Float32Array(nMels * nFreqs);
+  const melHz = (m: number) => 700 * (10 ** (m / 2595) - 1);
+  const nFreqs = nFft / 2 + 1;
+  const melMin = hzMel(0),
+    melMax = hzMel(sr / 2);
+  const step = (melMax - melMin) / (nMels + 1);
+  const pts = Float32Array.from({ length: nMels + 2 }, (_, i) =>
+    melHz(melMin + i * step),
+  );
+  const bins = Float32Array.from({ length: nFreqs }, (_, k) => (k * sr) / nFft);
+  const F = new Float32Array(nMels * nFreqs);
   for (let m = 0; m < nMels; m++) {
     for (let k = 0; k < nFreqs; k++) {
       const f = bins[k];
-      if (f >= pts[m] && f <= pts[m+1])      F[m*nFreqs+k] = (f-pts[m])/(pts[m+1]-pts[m]);
-      else if (f > pts[m+1] && f <= pts[m+2]) F[m*nFreqs+k] = (pts[m+2]-f)/(pts[m+2]-pts[m+1]);
+      if (f >= pts[m] && f <= pts[m + 1])
+        F[m * nFreqs + k] = (f - pts[m]) / (pts[m + 1] - pts[m]);
+      else if (f > pts[m + 1] && f <= pts[m + 2])
+        F[m * nFreqs + k] = (pts[m + 2] - f) / (pts[m + 2] - pts[m + 1]);
     }
   }
   return F;
@@ -138,15 +155,18 @@ function getMelFilters(): Float32Array {
  * Compute log-mel spectrogram matching NeMo's AudioToMelSpectrogramPreprocessor.
  * Returns Float32Array of shape [N_MELS, nFrames] (row-major).
  */
-function computeLogMel(samples: Float32Array): { mel: Float32Array; nFrames: number } {
+function computeLogMel(samples: Float32Array): {
+  mel: Float32Array;
+  nFrames: number;
+} {
   const padded = new Float32Array(samples.length + N_FFT);
   padded.set(samples, N_FFT >> 1);
 
   const nFrames = Math.floor((padded.length - N_FFT) / HOP_LENGTH) + 1;
-  const nFreqs  = N_FFT / 2 + 1;
-  const mel     = new Float32Array(N_MELS * nFrames);
+  const nFreqs = N_FFT / 2 + 1;
+  const mel = new Float32Array(N_MELS * nFrames);
   const filters = getMelFilters();
-  const frame   = new Float32Array(N_FFT);
+  const frame = new Float32Array(N_FFT);
 
   for (let t = 0; t < nFrames; t++) {
     const start = t * HOP_LENGTH;
@@ -159,7 +179,7 @@ function computeLogMel(samples: Float32Array): { mel: Float32Array; nFrames: num
     for (let m = 0; m < N_MELS; m++) {
       let v = 0;
       for (let k = 0; k < nFreqs; k++) {
-        const p = re[k]*re[k] + im[k]*im[k];
+        const p = re[k] * re[k] + im[k] * im[k];
         v += filters[m * nFreqs + k] * p;
       }
       mel[m * nFrames + t] = Math.log(Math.max(v, 1e-10));
@@ -168,11 +188,17 @@ function computeLogMel(samples: Float32Array): { mel: Float32Array; nFrames: num
 
   // Per-feature normalization (NeMo default)
   for (let m = 0; m < N_MELS; m++) {
-    let sum = 0, sum2 = 0;
-    for (let t = 0; t < nFrames; t++) { const v = mel[m*nFrames+t]; sum += v; sum2 += v*v; }
+    let sum = 0,
+      sum2 = 0;
+    for (let t = 0; t < nFrames; t++) {
+      const v = mel[m * nFrames + t];
+      sum += v;
+      sum2 += v * v;
+    }
     const mean = sum / nFrames;
-    const std  = Math.sqrt(Math.max(sum2/nFrames - mean*mean, 1e-10));
-    for (let t = 0; t < nFrames; t++) mel[m*nFrames+t] = (mel[m*nFrames+t] - mean) / std;
+    const std = Math.sqrt(Math.max(sum2 / nFrames - mean * mean, 1e-10));
+    for (let t = 0; t < nFrames; t++)
+      mel[m * nFrames + t] = (mel[m * nFrames + t] - mean) / std;
   }
 
   return { mel, nFrames };
@@ -193,25 +219,35 @@ function computeLogMel(samples: Float32Array): { mel: Float32Array; nFrames: num
 //        output_states_2  [1, 1, 640]
 
 interface DecodeResult {
-  tokenIds:     number[];
+  tokenIds: number[];
   frameIndices: number[];
 }
 
 async function greedyRNNT(
-  encoderOut:     ort.Tensor,   // [1, 512, time_enc]
+  encoderOut: ort.Tensor, // [1, 512, time_enc]
   decoderSession: ort.InferenceSession,
-  blankId:        number,
-  maxSymbols  = 10,
+  blankId: number,
+  maxSymbols = 10,
 ): Promise<DecodeResult> {
-  const tokenIds:     number[] = [];
+  const tokenIds: number[] = [];
   const frameIndices: number[] = [];
 
-  const timeEnc  = encoderOut.dims[2] as number;
+  const timeEnc = encoderOut.dims[2] as number;
   const hiddenDim = 640;
 
   // Initial LSTM states: zeros [1, 1, 640]
-  let state1 = new ort.Tensor("float32", new Float32Array(hiddenDim), [1, 1, hiddenDim]);
-  let state2 = new ort.Tensor("float32", new Float32Array(hiddenDim), [1, 1, hiddenDim]);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let state1: any = new ort.Tensor("float32", new Float32Array(hiddenDim), [
+    1,
+    1,
+    hiddenDim,
+  ]);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let state2: any = new ort.Tensor("float32", new Float32Array(hiddenDim), [
+    1,
+    1,
+    hiddenDim,
+  ]);
 
   // Previous predicted token (start with blank)
   let prevToken = blankId;
@@ -233,24 +269,27 @@ async function greedyRNNT(
 
       const out = await decoderSession.run({
         encoder_outputs: encoderOut,
-        targets:         targetsTensor,
-        target_length:   targetLenTensor,
-        input_states_1:  state1,
-        input_states_2:  state2,
+        targets: targetsTensor,
+        target_length: targetLenTensor,
+        input_states_1: state1,
+        input_states_2: state2,
       });
 
       // Logits: [1, 1, 1, 1025] → argmax over last dim
-      const logits  = out["outputs"].data as Float32Array;
-      const vocabSz = out["outputs"].dims[out["outputs"].dims.length - 1] as number;
+      const logits = out["outputs"].data as Float32Array;
+      const vocabSz = out["outputs"].dims[
+        out["outputs"].dims.length - 1
+      ] as number;
 
       // Find logits for current frame t
       // The decoder_joint output for frame t is at offset t * vocabSz
       // But since we pass the full encoder_outputs, we need offset t
       const offset = t * vocabSz;
-      let maxVal = -Infinity, predicted = blankId;
+      let maxVal = -Infinity,
+        predicted = blankId;
       for (let i = 0; i < vocabSz; i++) {
         if (logits[offset + i] > maxVal) {
-          maxVal    = logits[offset + i];
+          maxVal = logits[offset + i];
           predicted = i;
         }
       }
@@ -275,25 +314,25 @@ async function greedyRNNT(
 
 interface Tokenizer {
   vocab_size: number;
-  blank_id:   number;
-  vocab:      Record<string, string>;
+  blank_id: number;
+  vocab: Record<string, string>;
   word_boundary: string;
 }
 
 function tokensToWords(
-  tokenIds:     number[],
+  tokenIds: number[],
   frameIndices: number[],
-  tokenizer:    Tokenizer,
-  audioDurMs:   number,
+  tokenizer: Tokenizer,
+  audioDurMs: number,
 ): WordTiming[] {
   if (!tokenIds.length) return [];
 
-  const wb    = tokenizer.word_boundary; // "▁"
+  const wb = tokenizer.word_boundary; // "▁"
   const vocab = tokenizer.vocab;
 
-  const words:      WordTiming[]  = [];
-  let   curWord     = "";
-  let   wordStartFr = frameIndices[0];
+  const words: WordTiming[] = [];
+  let curWord = "";
+  let wordStartFr = frameIndices[0];
 
   for (let i = 0; i < tokenIds.length; i++) {
     const piece = vocab[String(tokenIds[i])] ?? "";
@@ -303,13 +342,13 @@ function tokensToWords(
       // Flush previous word
       const endMs = Math.min(frame * MS_PER_STEP, audioDurMs);
       words.push({
-        word:         curWord,
-        startMs:      wordStartFr * MS_PER_STEP,
+        word: curWord,
+        startMs: wordStartFr * MS_PER_STEP,
         endMs,
-        durationMs:   endMs - wordStartFr * MS_PER_STEP,
+        durationMs: endMs - wordStartFr * MS_PER_STEP,
         encoderFrame: wordStartFr,
       });
-      curWord     = piece.replace(wb, "");
+      curWord = piece.replace(wb, "");
       wordStartFr = frame;
     } else {
       curWord += piece.replace(wb, "");
@@ -319,10 +358,10 @@ function tokensToWords(
   // Flush last word
   if (curWord.length > 0) {
     words.push({
-      word:         curWord,
-      startMs:      wordStartFr * MS_PER_STEP,
-      endMs:        audioDurMs,
-      durationMs:   audioDurMs - wordStartFr * MS_PER_STEP,
+      word: curWord,
+      startMs: wordStartFr * MS_PER_STEP,
+      endMs: audioDurMs,
+      durationMs: audioDurMs - wordStartFr * MS_PER_STEP,
       encoderFrame: wordStartFr,
     });
   }
@@ -333,55 +372,69 @@ function tokensToWords(
 // ── VAD calibration (mirrors madd_audio_verifier.py) ─────────────────────────
 
 function vadSpeechMs(samples: Float32Array): number {
-  const frameSamples = Math.round(0.010 * SAMPLE_RATE); // 10ms
+  const frameSamples = Math.round(0.01 * SAMPLE_RATE); // 10ms
   const nFrames = Math.floor(samples.length / frameSamples);
-  let voiced = 0, consec = 0;
+  let voiced = 0,
+    consec = 0;
   for (let i = 0; i < nFrames; i++) {
-    const f = samples.subarray(i * frameSamples, (i+1) * frameSamples);
+    const f = samples.subarray(i * frameSamples, (i + 1) * frameSamples);
     let ss = 0;
     for (let j = 0; j < f.length; j++) ss += f[j] * f[j];
-    if (Math.sqrt(ss / f.length) > 0.015) { consec++; } else { consec = 0; }
+    if (Math.sqrt(ss / f.length) > 0.015) {
+      consec++;
+    } else {
+      consec = 0;
+    }
     if (consec >= 3) voiced++;
   }
   return voiced * 10;
 }
 
-function calibrateTimings(timings: WordTiming[], samples: Float32Array): WordTiming[] {
+function calibrateTimings(
+  timings: WordTiming[],
+  samples: Float32Array,
+): WordTiming[] {
   if (!timings.length) return timings;
-  const vad   = vadSpeechMs(samples);
+  const vad = vadSpeechMs(samples);
   const total = timings.reduce((s, t) => s + t.durationMs, 0);
   if (!total || !vad) return timings;
   const scale = Math.min(Math.max(vad / total, 0.8), 8.0);
-  return timings.map(t => ({
+  return timings.map((t) => ({
     ...t,
-    startMs:    t.startMs * scale,
-    endMs:      t.startMs * scale + t.durationMs * scale,
+    startMs: t.startMs * scale,
+    endMs: t.startMs * scale + t.durationMs * scale,
     durationMs: t.durationMs * scale,
   }));
 }
 
 // ── Model loading ─────────────────────────────────────────────────────────────
 
-let _enc:  ort.InferenceSession | null = null;
-let _dec:  ort.InferenceSession | null = null;
-let _tok:  Tokenizer | null = null;
+let _enc: ort.InferenceSession | null = null;
+let _dec: ort.InferenceSession | null = null;
+let _tok: Tokenizer | null = null;
 let _loadP: Promise<void> | null = null;
 
 // Tajweed annotations loaded from HF (gzipped JSON)
 let _tajweedData: Record<string, Record<string, unknown[]>> | null = null;
-export function getTajweedData() { return _tajweedData; }
+export function getTajweedData() {
+  return _tajweedData;
+}
 
-async function ensureModels(onProgress?: (pct: number, msg: string) => void): Promise<void> {
+async function ensureModels(
+  onProgress?: (pct: number, msg: string) => void,
+): Promise<void> {
   if (_enc && _dec && _tok) return;
   if (_loadP) return _loadP;
 
   _loadP = (async () => {
-    const hasWebGPU = typeof navigator !== "undefined" && !!navigator.gpu;
+    const hasWebGPU =
+      typeof navigator !== "undefined" &&
+      !!(navigator as unknown as { gpu?: unknown }).gpu;
     const eps = hasWebGPU ? ["webgpu", "wasm"] : ["wasm"];
     console.log("[LocalASR] EP:", eps[0]);
 
     // Download + cache all model files from HuggingFace via OPFS
-    const { loadModelFiles } = await import("./modelLoader");
+    const { loadModelFiles } = await import("../lib/modelLoader");
     const { encoderBuffer, decoderBuffer, tokenizerJson, tajweedJson } =
       await loadModelFiles(onProgress);
 
@@ -413,8 +466,8 @@ async function ensureModels(onProgress?: (pct: number, msg: string) => void): Pr
 // ── Core transcribe function ──────────────────────────────────────────────────
 
 export async function transcribeAudio(
-  pcm16:       Int16Array,
-  audioDurMs:  number,
+  pcm16: Int16Array,
+  audioDurMs: number,
 ): Promise<{ text: string; timings: WordTiming[] } | null> {
   if (!_enc || !_dec || !_tok) throw new Error("Models not loaded");
 
@@ -430,18 +483,24 @@ export async function transcribeAudio(
   // Mel spectrogram: [1, 80, nFrames]
   const { mel, nFrames } = computeLogMel(samples);
   const audioSignal = new ort.Tensor("float32", mel, [1, N_MELS, nFrames]);
-  const lengthTensor = new ort.Tensor("int64", BigInt64Array.from([BigInt(nFrames)]), [1]);
+  const lengthTensor = new ort.Tensor(
+    "int64",
+    BigInt64Array.from([BigInt(nFrames)]),
+    [1],
+  );
 
   // Encoder
   const encOut = await _enc.run({
     audio_signal: audioSignal,
-    length:       lengthTensor,
+    length: lengthTensor,
   });
   const encoderOutputs = encOut["outputs"]; // [1, 512, time_enc]
 
   // RNNT greedy decode
   const { tokenIds, frameIndices } = await greedyRNNT(
-    encoderOutputs, _dec, BLANK_ID
+    encoderOutputs,
+    _dec,
+    BLANK_ID,
   );
 
   if (!tokenIds.length) return null;
@@ -451,7 +510,7 @@ export async function transcribeAudio(
 
   // VAD calibration — corrects NeMo's vowel compression
   const timings = calibrateTimings(rawTimings, samples);
-  const text    = timings.map(t => t.word).join(" ");
+  const text = timings.map((t) => t.word).join(" ");
 
   return { text, timings };
 }
@@ -459,33 +518,36 @@ export async function transcribeAudio(
 // ── React Hook ────────────────────────────────────────────────────────────────
 
 export interface UseLocalASRReturn {
-  isListening:       boolean;
-  isModelLoaded:     boolean;
-  isLoadingModel:    boolean;
-  loadProgress:      number;
-  loadStatus:        string;
+  isListening: boolean;
+  isModelLoaded: boolean;
+  isLoadingModel: boolean;
+  loadProgress: number;
+  loadStatus: string;
   executionProvider: "webgpu" | "wasm" | null;
-  error:             string | null;
-  start: (onResult: (r: LocalASRResult) => void, opts?: StartOptions) => Promise<void>;
-  stop:  () => void;
+  error: string | null;
+  start: (
+    onResult: (r: LocalASRResult) => void,
+    opts?: StartOptions,
+  ) => Promise<void>;
+  stop: () => void;
 }
 
 export function useLocalASR(): UseLocalASRReturn {
-  const [isListening,    setIsListening]    = useState(false);
-  const [isModelLoaded,  setIsModelLoaded]  = useState(false);
+  const [isListening, setIsListening] = useState(false);
+  const [isModelLoaded, setIsModelLoaded] = useState(false);
   const [isLoadingModel, setIsLoadingModel] = useState(false);
-  const [loadProgress,   setLoadProgress]   = useState(0);
-  const [loadStatus,     setLoadStatus]     = useState("");
-  const [ep,             setEp]             = useState<"webgpu"|"wasm"|null>(null);
-  const [error,          setError]          = useState<string|null>(null);
+  const [loadProgress, setLoadProgress] = useState(0);
+  const [loadStatus, setLoadStatus] = useState("");
+  const [ep, setEp] = useState<"webgpu" | "wasm" | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
-  const onResultRef    = useRef<((r: LocalASRResult) => void)|null>(null);
-  const streamRef      = useRef<MediaStream|null>(null);
-  const audioCtxRef    = useRef<AudioContext|null>(null);
-  const processorRef   = useRef<ScriptProcessorNode|null>(null);
-  const bufferRef      = useRef<Int16Array[]>([]);
-  const listeningRef   = useRef(false);
-  const timerRef       = useRef<ReturnType<typeof setInterval>|null>(null);
+  const onResultRef = useRef<((r: LocalASRResult) => void) | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const processorRef = useRef<ScriptProcessorNode | null>(null);
+  const bufferRef = useRef<Int16Array[]>([]);
+  const listeningRef = useRef(false);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Preload on mount
   useEffect(() => {
@@ -493,87 +555,127 @@ export function useLocalASR(): UseLocalASRReturn {
     ensureModels((pct, msg) => {
       setLoadProgress(pct);
       setLoadStatus(msg);
-    }).then(() => {
-      setIsModelLoaded(true);
-      setEp(typeof navigator !== "undefined" && !!navigator.gpu ? "webgpu" : "wasm");
-    }).catch(e => {
-      setError(e instanceof Error ? e.message : "Model load failed");
-    }).finally(() => {
-      setIsLoadingModel(false);
-    });
+    })
+      .then(() => {
+        setIsModelLoaded(true);
+        setEp(
+          typeof navigator !== "undefined" &&
+            !!(navigator as unknown as { gpu?: unknown }).gpu
+            ? "webgpu"
+            : "wasm",
+        );
+      })
+      .catch((e) => {
+        setError(e instanceof Error ? e.message : "Model load failed");
+      })
+      .finally(() => {
+        setIsLoadingModel(false);
+      });
   }, []);
 
   const stop = useCallback(() => {
     listeningRef.current = false;
-    if (timerRef.current)    { clearInterval(timerRef.current); timerRef.current = null; }
-    if (processorRef.current){ processorRef.current.disconnect(); processorRef.current = null; }
-    if (audioCtxRef.current) { audioCtxRef.current.close().catch(()=>{}); audioCtxRef.current = null; }
-    if (streamRef.current)   { streamRef.current.getTracks().forEach(t=>t.stop()); streamRef.current = null; }
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+    if (processorRef.current) {
+      processorRef.current.disconnect();
+      processorRef.current = null;
+    }
+    if (audioCtxRef.current) {
+      audioCtxRef.current.close().catch(() => {});
+      audioCtxRef.current = null;
+    }
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((t) => t.stop());
+      streamRef.current = null;
+    }
     bufferRef.current = [];
     setIsListening(false);
   }, []);
 
-  const start = useCallback(async (
-    onResult: (r: LocalASRResult) => void,
-    opts: StartOptions = {},
-  ) => {
-    stop();
-    if (!isModelLoaded) await ensureModels();
+  const start = useCallback(
+    async (onResult: (r: LocalASRResult) => void, opts: StartOptions = {}) => {
+      stop();
+      if (!isModelLoaded) await ensureModels();
 
-    onResultRef.current  = onResult;
-    listeningRef.current = true;
-    bufferRef.current    = [];
+      onResultRef.current = onResult;
+      listeningRef.current = true;
+      bufferRef.current = [];
 
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: { sampleRate: SAMPLE_RATE, channelCount: 1,
-               echoCancellation: true, noiseSuppression: true },
-    });
-    streamRef.current = stream;
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          sampleRate: SAMPLE_RATE,
+          channelCount: 1,
+          echoCancellation: true,
+          noiseSuppression: true,
+        },
+      });
+      streamRef.current = stream;
 
-    const ctx = new AudioContext({ sampleRate: SAMPLE_RATE });
-    audioCtxRef.current = ctx;
+      const ctx = new AudioContext({ sampleRate: SAMPLE_RATE });
+      audioCtxRef.current = ctx;
 
-    const src  = ctx.createMediaStreamSource(stream);
-    const proc = ctx.createScriptProcessor(4096, 1, 1);
-    processorRef.current = proc;
+      const src = ctx.createMediaStreamSource(stream);
+      const proc = ctx.createScriptProcessor(4096, 1, 1);
+      processorRef.current = proc;
 
-    proc.onaudioprocess = (e) => {
-      if (!listeningRef.current) return;
-      const f32  = e.inputBuffer.getChannelData(0);
-      const pcm  = new Int16Array(f32.length);
-      for (let i = 0; i < f32.length; i++)
-        pcm[i] = Math.max(-32768, Math.min(32767, Math.round(f32[i] * 32768)));
-      bufferRef.current.push(pcm);
-      opts.onAudioChunk?.(f32.buffer);
-    };
+      proc.onaudioprocess = (e) => {
+        if (!listeningRef.current) return;
+        const f32 = e.inputBuffer.getChannelData(0);
+        const pcm = new Int16Array(f32.length);
+        for (let i = 0; i < f32.length; i++)
+          pcm[i] = Math.max(
+            -32768,
+            Math.min(32767, Math.round(f32[i] * 32768)),
+          );
+        bufferRef.current.push(pcm);
+        opts.onAudioChunk?.(f32.buffer);
+      };
 
-    src.connect(proc);
-    proc.connect(ctx.destination);
-    setIsListening(true);
+      src.connect(proc);
+      proc.connect(ctx.destination);
+      setIsListening(true);
 
-    // Process every CHUNK_MS
-    timerRef.current = setInterval(async () => {
-      if (!listeningRef.current || !bufferRef.current.length) return;
-      const chunks  = bufferRef.current.splice(0);
-      const len     = chunks.reduce((s, c) => s + c.length, 0);
-      const combined = new Int16Array(len);
-      let off = 0;
-      for (const c of chunks) { combined.set(c, off); off += c.length; }
-      const durMs = (combined.length / SAMPLE_RATE) * 1000;
-      try {
-        const res = await transcribeAudio(combined, durMs);
-        if (res?.text.trim()) {
-          onResultRef.current?.({ text: res.text, isFinal: true, timings: res.timings });
+      // Process every CHUNK_MS
+      timerRef.current = setInterval(async () => {
+        if (!listeningRef.current || !bufferRef.current.length) return;
+        const chunks = bufferRef.current.splice(0);
+        const len = chunks.reduce((s, c) => s + c.length, 0);
+        const combined = new Int16Array(len);
+        let off = 0;
+        for (const c of chunks) {
+          combined.set(c, off);
+          off += c.length;
         }
-      } catch (e) {
-        console.error("[LocalASR] Error:", e);
-      }
-    }, CHUNK_MS);
-  }, [isModelLoaded, stop]);
+        const durMs = (combined.length / SAMPLE_RATE) * 1000;
+        try {
+          const res = await transcribeAudio(combined, durMs);
+          if (res?.text.trim()) {
+            onResultRef.current?.({
+              text: res.text,
+              isFinal: true,
+              timings: res.timings,
+            });
+          }
+        } catch (e) {
+          console.error("[LocalASR] Error:", e);
+        }
+      }, CHUNK_MS);
+    },
+    [isModelLoaded, stop],
+  );
 
   return {
-    isListening, isModelLoaded, isLoadingModel,
-    loadProgress, loadStatus, executionProvider: ep, error,
-    start, stop,
+    isListening,
+    isModelLoaded,
+    isLoadingModel,
+    loadProgress,
+    loadStatus,
+    executionProvider: ep,
+    error,
+    start,
+    stop,
   };
 }
